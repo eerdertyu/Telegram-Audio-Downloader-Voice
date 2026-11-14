@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from telegram import InputFile, InputMediaAudio, Update
+from telegram import InputFile, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -211,31 +211,30 @@ async def flush_batch(
             )
             return
 
-        # Telegram media groups support 2–10 audio files. A single file is sent separately.
-        for offset in range(0, len(converted), MAX_BATCH_SIZE):
-            chunk = converted[offset:offset + MAX_BATCH_SIZE]
-            if len(chunk) == 1:
-                filename, data = chunk[0]
+        # Send files one by one. This avoids Telegram's media-group parsing
+        # failures and lets the rest of the batch continue if one file is rejected.
+        sent = 0
+        send_errors = 0
+        for filename, data in converted:
+            try:
                 await application.bot.send_audio(
                     chat_id=chat_id,
                     audio=InputFile(io.BytesIO(data), filename=filename),
                     title=filename[:-4],
                     performer="Voice to MP3",
                 )
-            else:
-                media = [
-                    InputMediaAudio(
-                        media=InputFile(io.BytesIO(data), filename=filename),
-                        title=filename[:-4],
-                        performer="Voice to MP3",
-                    )
-                    for filename, data in chunk
-                ]
-                await application.bot.send_media_group(chat_id=chat_id, media=media)
+                sent += 1
+                # A small pause helps avoid hitting Telegram's per-chat rate limit.
+                await asyncio.sleep(0.15)
+            except Exception:
+                send_errors += 1
+                logger.exception("Failed to send %s to chat %s", filename, chat_id)
 
-        summary = f"Готово! Отправлено MP3-файлов: {len(converted)}."
+        summary = f"Готово! Отправлено MP3-файлов: {sent}."
         if errors:
-            summary += f" Не удалось обработать: {errors}."
+            summary += f" Не удалось конвертировать: {errors}."
+        if send_errors:
+            summary += f" Не удалось отправить: {send_errors}."
         await application.bot.send_message(chat_id=chat_id, text=summary)
     except Exception:
         logger.exception("Failed to deliver converted batch to chat %s", chat_id)
