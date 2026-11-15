@@ -24,7 +24,6 @@ from audio_downloader import router as audio_router
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8743333749"))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "1800"))  # 30 минут
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "").strip()
 MAX_X_SOURCES = 50
 
@@ -881,6 +880,8 @@ async def collect_top_ten(m: Message, state: FSMContext):
     for label, collector in (("X", fetch_tweets), ("Telegram", fetch_telegram_posts)):
         try:
             remaining = max(0, 10 - sum(item["new"] for _, item in results))
+            if label == "X":
+                remaining = min(5, remaining)
             if remaining == 0:
                 break
             results.append((label, await collector(top_n=remaining)))
