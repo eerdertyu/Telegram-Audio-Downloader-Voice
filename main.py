@@ -184,14 +184,14 @@ async def help_cmd(m: Message, state: FSMContext):
     await state.clear()
     await m.answer(
         "🆘 <b>Помощь</b>\n\n"
-        "📡 <b>Источники</b> — список аккаунтов X\n"
-        "➕ <b>Добавить источник</b> — отправь ссылку на профиль X\n"
+        "📡 <b>Источники X</b> / ➕ <b>Добавить X</b> — аккаунты X\n"
+        "📨 <b>Источники Telegram</b> / ➕ <b>Добавить Telegram</b> — публичные каналы\n"
         "📢 <b>Мой канал</b> — @username или ID канала\n"
         "💬 <b>Чат обсуждений</b> — ID привязанного чата\n"
         "📝 <b>Шаблон поста</b> — текст внизу поста\n"
         "📈 <b>Статистика за день</b>\n"
         "📊 <b>Статус</b> — общая сводка\n"
-        "⭐ <b>Собрать топ-10 X</b> — выбрать 10 лучших свежих постов из всех источников\n"
+        "⭐ <b>Собрать топ-10 новых</b> — вручную собрать посты из X и Telegram\n"
         "🔍 <b>Проверить канал</b> — проверить права бота на публикацию\n\n"
         "✅ Одобряй посты кнопками под превью.\n\n"
         "⚠️ Для полной статистики реакций нужен webhook — "
@@ -903,29 +903,26 @@ async def collect_top_ten(m: Message, state: FSMContext):
     if not m.from_user or m.from_user.id != ADMIN_ID:
         return
     await state.clear()
-    status_msg = await m.answer(
-        "⭐ Собираю до 10 лучших свежих постов со всех добавленных аккаунтов X. "
-        "Отсортирую по свежести из бесплатных RSS-лент, переведу на русский и отправлю в очередь…"
+    status_msg = await m.answer("⭐ Собираю до 10 новых постов из X и Telegram и отправляю их в очередь модерации…")
+    results = []
+    errors = []
+    for label, collector in (("X", fetch_tweets), ("Telegram", fetch_telegram_posts)):
+        try:
+            results.append((label, await collector(top_n=10)))
+        except Exception as exc:
+            errors.append(f"{label}: {str(exc)[:220]}")
+    total_new = sum(item["new"] for _, item in results)
+    total_queued = sum(item["queued"] for _, item in results)
+    report = (
+        "⭐ <b>Ручная подборка завершена</b>\n\n"
+        + "\n".join(f"{label}: источников {item['checked']}/{item['sources']}, новых {item['new']}, в очереди {item['queued']}" for label, item in results)
+        + f"\n\nВсего новых найдено: <b>{total_new}</b>\nОтправлено в очередь: <b>{total_queued}</b>\n\n"
+        "Автоматическая проверка выключена. Посты собираются только после нажатия кнопки."
     )
-    try:
-        stats = await fetch_tweets(top_n=10)
-        report = (
-            "⭐ <b>Подборка готова</b>\n\n"
-            f"Проверено источников: {stats['checked']} из {stats['sources']}\n"
-            f"Новых кандидатов найдено: {stats['new']}\n"
-            f"Отправлено в очередь модерации: <b>{stats['queued']}</b>\n"
-            "Посты отсортированы по свежести. Бесплатная RSS-лента не предоставляет счётчики реакций. "
-            "Перевод выполнен автоматически."
-        )
-        if stats["errors"]:
-            report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
-                "• " + html.escape(err) for err in stats["errors"][:8]
-            )
-        await status_msg.edit_text(report)
-    except Exception as e:
-        await status_msg.edit_text(
-            f"❌ <b>Не удалось собрать подборку</b>\n{html.escape(str(e)[:900])}",
-        )
+    all_errors = errors + [f"{label}: {err}" for label, item in results for err in item["errors"]]
+    if all_errors:
+        report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join("• " + html.escape(err) for err in all_errors[:10])
+    await status_msg.edit_text(report)
 
 
 @dp.message(F.text == "🔍 Проверить канал")
