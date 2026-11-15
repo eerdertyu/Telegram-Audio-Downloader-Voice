@@ -56,8 +56,15 @@ class Form(StatesGroup):
     waiting_template = State()
 
 
-def init_db():
-    con = sqlite3.connect(DB)
+def user_db_path(user_id: int) -> str:
+    """Each Telegram user gets an isolated database; preserve the original owner database."""
+    if int(user_id) == ADMIN_ID:
+        return DB
+    return os.path.join(os.path.dirname(os.path.abspath(DB)), f"bot_{int(user_id)}.db")
+
+
+def init_db(user_id: int = ADMIN_ID):
+    con = sqlite3.connect(user_db_path(user_id))
     cur = con.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,21 +96,21 @@ def init_db():
     con.close()
 
 
-def db():
-    con = sqlite3.connect(DB)
+def db(user_id: int = ADMIN_ID):
+    con = sqlite3.connect(user_db_path(user_id))
     con.row_factory = sqlite3.Row
     return con
 
 
-def get_setting(key, default=None):
-    con = db()
+def get_setting(key, default=None, user_id: int = ADMIN_ID):
+    con = db(user_id)
     row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     con.close()
     return row["value"] if row else default
 
 
-def set_setting(key, value):
-    con = db()
+def set_setting(key, value, user_id: int = ADMIN_ID):
+    con = db(user_id)
     con.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", (key, value))
     con.commit()
     con.close()
@@ -156,9 +163,9 @@ def translate_text(text: str) -> str:
 # ================= СТАРТ =================
 @dp.message(Command("start"))
 async def start(m: Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        await m.answer("⛔️ Бот приватный.")
+    if not m.from_user:
         return
+    init_db(m.from_user.id)
     await state.clear()
     await m.answer(
         "👋 <b>Привет!</b>\n\n"
@@ -202,10 +209,8 @@ async def help_cmd(m: Message, state: FSMContext):
 # ================= ИСТОЧНИКИ =================
 @dp.message(F.text == "⏳ Очередь постов")
 async def pending_queue(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
     await state.clear()
-    con = db()
+    con = db(m.from_user.id)
     rows = con.execute(
         "SELECT post_id, text, image, source FROM pending ORDER BY rowid DESC LIMIT 10"
     ).fetchall()
@@ -237,8 +242,6 @@ async def pending_queue(m: Message, state: FSMContext):
 
 @dp.message(F.text == "🎧 Голосовые / MP3")
 async def audio_menu(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
     await state.clear()
     await m.answer(
         "🎧 <b>Голосовые → MP3</b>\n\n"
@@ -254,7 +257,7 @@ async def audio_menu(m: Message, state: FSMContext):
 @dp.message(F.text.in_({"📡 Источники", "📡 Источники X"}))
 async def sources(m: Message, state: FSMContext):
     await state.clear()
-    con = db()
+    con = db(m.from_user.id)
     rows = con.execute("SELECT id, url, name FROM sources WHERE source_type='x'").fetchall()
     con.close()
     if not rows:
@@ -275,7 +278,7 @@ async def sources(m: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("del_"))
 async def del_source(cb: CallbackQuery):
     sid = cb.data.split("_")[1]
-    con = db()
+    con = db(cb.from_user.id)
     con.execute("DELETE FROM sources WHERE id=?", (sid,))
     con.commit()
     con.close()
@@ -298,8 +301,6 @@ async def add_src_prompt(m: Message, state: FSMContext):
 
 @dp.message(Form.waiting_source)
 async def save_source(m: Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        return
     raw = (m.text or "").strip()
     if "|" in raw:
         profile, name = [x.strip() for x in raw.split("|", 1)]
@@ -312,7 +313,7 @@ async def save_source(m: Message, state: FSMContext):
         await m.answer("⚠️ Не удалось распознать профиль. Отправь ссылку вида https://x.com/username")
         return
 
-    con = db()
+    con = db(m.from_user.id)
     try:
         count = con.execute("SELECT COUNT(*) c FROM sources WHERE source_type='x'").fetchone()["c"]
         if count >= MAX_X_SOURCES:
@@ -335,7 +336,7 @@ async def save_source(m: Message, state: FSMContext):
 @dp.message(F.text == "📢 Мой канал")
 async def ask_channel(m: Message, state: FSMContext):
     await state.set_state(Form.waiting_channel)
-    cur = get_setting("channel")
+    cur = get_setting("channel", user_id=m.from_user.id)
     await m.answer(
         f"📢 Текущий канал: <code>{cur or 'не задан'}</code>\n\n"
         "Введи <b>@username</b> канала или его <b>ID</b>.\n\n"
@@ -349,8 +350,6 @@ async def ask_channel(m: Message, state: FSMContext):
 
 @dp.message(Form.waiting_channel)
 async def save_channel(m: Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        return
     raw = m.text.strip()
     if raw.startswith("-") or raw.isdigit():
         try:
@@ -367,7 +366,7 @@ async def save_channel(m: Message, state: FSMContext):
         if member.status not in ("administrator", "creator"):
             await m.answer("⚠️ Я не админ в этом канале.")
             return
-        set_setting("channel", str(target))
+        set_setting("channel", str(target), user_id=m.from_user.id)
         await m.answer(f"✅ Канал сохранён: <code>{target}</code>", reply_markup=main_menu())
         await state.clear()
     except Exception as e:
@@ -378,7 +377,7 @@ async def save_channel(m: Message, state: FSMContext):
 @dp.message(F.text == "💬 Чат обсуждений")
 async def ask_discussion(m: Message, state: FSMContext):
     await state.set_state(Form.waiting_discussion)
-    cur = get_setting("discussion_chat")
+    cur = get_setting("discussion_chat", user_id=m.from_user.id)
     await m.answer(
         f"💬 Текущий чат: <code>{cur or 'не задан'}</code>\n\n"
         "Введи ID привязанного чата обсуждений.\n\n"
@@ -390,8 +389,6 @@ async def ask_discussion(m: Message, state: FSMContext):
 
 @dp.message(Form.waiting_discussion)
 async def save_discussion(m: Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        return
     raw = m.text.strip()
     if raw.startswith("-") or raw.isdigit():
         try:
@@ -408,7 +405,7 @@ async def save_discussion(m: Message, state: FSMContext):
         if member.status not in ("administrator", "creator"):
             await m.answer("⚠️ Я не админ в этом чате.")
             return
-        set_setting("discussion_chat", str(target))
+        set_setting("discussion_chat", str(target), user_id=m.from_user.id)
         await m.answer(f"✅ Чат сохранён: <code>{target}</code>", reply_markup=main_menu())
         await state.clear()
     except Exception as e:
@@ -419,7 +416,7 @@ async def save_discussion(m: Message, state: FSMContext):
 @dp.message(F.text == "📝 Шаблон поста")
 async def ask_tpl(m: Message, state: FSMContext):
     await state.set_state(Form.waiting_template)
-    cur = get_setting("template", "🔥 #новости")
+    cur = get_setting("template", "🔥 #новости", user_id=m.from_user.id)
     await m.answer(
         f"📝 Текущий шаблон:\n<code>{cur}</code>\n\n"
         "Введи новый текст (добавляется внизу поста).\n\n"
@@ -433,9 +430,7 @@ async def ask_tpl(m: Message, state: FSMContext):
 
 @dp.message(Form.waiting_template)
 async def save_template(m: Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        return
-    set_setting("template", m.text)
+    set_setting("template", m.text, user_id=m.from_user.id)
     await m.answer(
         f"✅ Шаблон сохранён:\n\n{m.text}",
         reply_markup=main_menu(),
@@ -448,7 +443,7 @@ async def save_template(m: Message, state: FSMContext):
 @dp.message(F.text == "📊 Статус")
 async def status(m: Message, state: FSMContext):
     await state.clear()
-    con = db()
+    con = db(m.from_user.id)
     seen = con.execute("SELECT COUNT(*) c FROM seen").fetchone()["c"]
     pend = con.execute("SELECT COUNT(*) c FROM pending").fetchone()["c"]
     srcs = con.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"]
@@ -460,9 +455,9 @@ async def status(m: Message, state: FSMContext):
         f"✅ Обработано: {seen}\n"
         f"📤 Опубликовано: {pub}\n"
         f"⏳ В очереди: {pend}\n"
-        f"📢 Канал: <code>{get_setting('channel') or 'не задан'}</code>\n"
-        f"💬 Чат: <code>{get_setting('discussion_chat') or 'не задан'}</code>\n"
-        f"📝 Шаблон: {'задан' if get_setting('template') else 'не задан'}\n"
+        f"📢 Канал: <code>{get_setting('channel', user_id=m.from_user.id) or 'не задан'}</code>\n"
+        f"💬 Чат: <code>{get_setting('discussion_chat', user_id=m.from_user.id) or 'не задан'}</code>\n"
+        f"📝 Шаблон: {'задан' if get_setting('template', user_id=m.from_user.id) else 'не задан'}\n"
         "⏸ Автосбор: выключен (только вручную)",
         reply_markup=main_menu(),
         link_preview_options=NO_PREVIEW
@@ -473,12 +468,12 @@ async def status(m: Message, state: FSMContext):
 @dp.message(F.text == "📈 Статистика за день")
 async def day_stats(m: Message, state: FSMContext):
     await state.clear()
-    channel = get_setting("channel")
+    channel = get_setting("channel", user_id=m.from_user.id)
     if not channel:
         await m.answer("⚠️ Канал не задан. Сначала 📢 Мой канал.")
         return
 
-    con = db()
+    con = db(m.from_user.id)
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     rows = con.execute(
         "SELECT channel_msg_id FROM published WHERE published_at >= ?",
@@ -506,17 +501,14 @@ def make_kb(post_id: str) -> InlineKeyboardMarkup:
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve(cb: CallbackQuery):
-    if not cb.from_user or cb.from_user.id != ADMIN_ID:
-        await cb.answer("Нет доступа.", show_alert=True)
-        return
     post_id = cb.data[len("approve_"):]
-    con = db()
+    con = db(cb.from_user.id)
     row = con.execute("SELECT * FROM pending WHERE post_id=?", (post_id,)).fetchone()
     if not row:
         await cb.answer("Уже обработано.")
         con.close()
         return
-    channel = get_setting("channel")
+    channel = get_setting("channel", user_id=cb.from_user.id)
     if not channel:
         await cb.answer("Сначала укажи канал!", show_alert=True)
         con.close()
@@ -563,11 +555,8 @@ async def approve(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject(cb: CallbackQuery):
-    if not cb.from_user or cb.from_user.id != ADMIN_ID:
-        await cb.answer("Нет доступа.", show_alert=True)
-        return
     post_id = cb.data[len("reject_"):]
-    con = db()
+    con = db(cb.from_user.id)
     con.execute("DELETE FROM pending WHERE post_id=?", (post_id,))
     con.commit()
     con.close()
@@ -603,9 +592,9 @@ def _rss_text(item):
     return re.sub(r"\s+", " ", html.unescape(description)).strip()
 
 
-async def fetch_tweets(top_n=None):
+async def fetch_tweets(user_id: int, top_n=None):
     """Fetch public X profiles through FxEmbed RSS; no X API key or paid credits."""
-    con = db()
+    con = db(user_id)
     rows = con.execute("SELECT id, handle, name FROM sources WHERE source_type='x' ORDER BY id").fetchall()
     con.close()
     if not rows:
@@ -650,7 +639,7 @@ async def fetch_tweets(top_n=None):
                     post_id = match.group(1) if match else (guid or post_url)
                     if not post_id:
                         continue
-                    con = db()
+                    con = db(user_id)
                     exists = con.execute("SELECT 1 FROM seen WHERE post_id=?", (post_id,)).fetchone()
                     con.close()
                     if exists:
@@ -701,7 +690,7 @@ async def fetch_tweets(top_n=None):
         translated = await asyncio.to_thread(translate_text, item["raw"])
         translated = html.escape(translated or item["raw"])
         link = item["link"]
-        tpl = get_setting("template", "Источник: {link}") or ""
+        tpl = get_setting("template", "Источник: {link}", user_id=user_id) or ""
         if "{link}" in tpl:
             tpl_filled = html.escape(tpl, quote=False).replace(
                 "{link}", f'<a href="{link}">Оригинал в X</a>'
@@ -719,15 +708,15 @@ async def fetch_tweets(top_n=None):
             kb = make_kb(item["post_id"])
             if item["image"]:
                 msg = await bot.send_photo(
-                    ADMIN_ID, item["image"], caption=final[:1024], reply_markup=kb
+                    user_id, item["image"], caption=final[:1024], reply_markup=kb
                 )
                 if len(final) > 1024:
-                    await bot.send_message(ADMIN_ID, final[1024:], link_preview_options=NO_PREVIEW)
+                    await bot.send_message(user_id, final[1024:], link_preview_options=NO_PREVIEW)
             else:
                 msg = await bot.send_message(
-                    ADMIN_ID, final, reply_markup=kb, link_preview_options=NO_PREVIEW
+                    user_id, final, reply_markup=kb, link_preview_options=NO_PREVIEW
                 )
-            con = db()
+            con = db(user_id)
             con.execute(
                 "INSERT OR REPLACE INTO pending (post_id, text, image, source, admin_msg_id) VALUES (?,?,?,?,?)",
                 (item["post_id"], final, item["image"], f"@{item['handle']}", msg.message_id)
@@ -745,10 +734,8 @@ async def fetch_tweets(top_n=None):
 
 @dp.message(F.text == "📨 Источники Telegram")
 async def telegram_sources(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
     await state.clear()
-    con = db()
+    con = db(m.from_user.id)
     rows = con.execute("SELECT id, url, name FROM sources WHERE source_type='telegram' ORDER BY id").fetchall()
     con.close()
     if not rows:
@@ -765,16 +752,12 @@ async def telegram_sources(m: Message, state: FSMContext):
 
 @dp.message(F.text == "➕ Добавить Telegram")
 async def add_telegram_prompt(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
     await state.set_state(Form.waiting_telegram_source)
     await m.answer("Пришли username или ссылку на публичный Telegram-канал:\n<code>@durov</code> или <code>https://t.me/durov</code>\n\nМожно добавить подпись через |. Поддерживаются только публичные каналы.")
 
 
 @dp.message(Form.waiting_telegram_source)
 async def save_telegram_source(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
     raw = (m.text or "").strip()
     profile, name = (raw.split("|", 1) + [""])[:2] if "|" in raw else (raw, "")
     profile, name = profile.strip(), name.strip()
@@ -783,7 +766,7 @@ async def save_telegram_source(m: Message, state: FSMContext):
     if not re.fullmatch(r"[A-Za-z0-9_]{5,}", handle):
         await m.answer("Не распознал канал. Пришли @username или https://t.me/username")
         return
-    con = db()
+    con = db(m.from_user.id)
     try:
         con.execute("INSERT INTO sources (url, name, source_type, handle) VALUES (?,?,?,?)",
                     (f"https://t.me/{handle}", name or handle, "telegram", handle))
@@ -796,8 +779,8 @@ async def save_telegram_source(m: Message, state: FSMContext):
         con.close()
 
 
-async def fetch_telegram_posts(top_n=10):
-    con = db()
+async def fetch_telegram_posts(user_id: int, top_n=10):
+    con = db(user_id)
     sources = con.execute("SELECT id, handle, name FROM sources WHERE source_type='telegram' ORDER BY id").fetchall()
     con.close()
     stats = {"sources": len(sources), "checked": 0, "new": 0, "queued": 0, "errors": [], "found": 0}
@@ -817,7 +800,7 @@ async def fetch_telegram_posts(top_n=10):
                     segment = body[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(body)]
                     post_id = match.group(1)
                     uid = f"tg:{handle}/{post_id}"
-                    con = db()
+                    con = db(user_id)
                     exists = con.execute("SELECT 1 FROM seen WHERE post_id=?", (uid,)).fetchone()
                     con.close()
                     if exists:
@@ -838,15 +821,15 @@ async def fetch_telegram_posts(top_n=10):
                     translated = await asyncio.to_thread(translate_text, raw)
                     translated = html.escape(translated or raw)
                     link = f"https://t.me/{handle}/{post_num}"
-                    template = get_setting("template", "🔥 #новости") or ""
+                    template = get_setting("template", "🔥 #новости", user_id=user_id) or ""
                     footer = html.escape(template, quote=False).replace("{link}", f'<a href="{link}">Оригинал в Telegram</a>') if template else f'<a href="{link}">Оригинал в Telegram</a>'
                     final = f"📨 <b>{html.escape(source['name'] or '@' + handle)}</b>\n\n{random.choice(EMOJI_POOL)} {translated}\n\n{footer}"[:4096]
                     kb = make_kb(uid)
                     if image_url:
-                        msg = await bot.send_photo(ADMIN_ID, image_url, caption=final[:1024], reply_markup=kb)
+                        msg = await bot.send_photo(user_id, image_url, caption=final[:1024], reply_markup=kb)
                     else:
-                        msg = await bot.send_message(ADMIN_ID, final, reply_markup=kb, link_preview_options=NO_PREVIEW)
-                    con = db()
+                        msg = await bot.send_message(user_id, final, reply_markup=kb, link_preview_options=NO_PREVIEW)
+                    con = db(user_id)
                     con.execute("INSERT OR REPLACE INTO pending (post_id, text, image, source, admin_msg_id) VALUES (?,?,?,?,?)",
                                 (uid, final, image_url, f"Telegram @{handle}", msg.message_id))
                     con.execute("INSERT OR IGNORE INTO seen (post_id) VALUES (?)", (uid,))
@@ -862,8 +845,6 @@ async def fetch_telegram_posts(top_n=10):
 
 @dp.message(F.text.in_({"⭐ Собрать топ-10 X", "⭐ Собрать топ-10 новых"}))
 async def collect_top_ten(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
     await state.clear()
     status_msg = await m.answer("⭐ Собираю до 10 новых постов из X и Telegram и отправляю их в очередь модерации…")
     results = []
@@ -875,7 +856,7 @@ async def collect_top_ten(m: Message, state: FSMContext):
                 remaining = min(5, remaining)
             if remaining == 0:
                 break
-            results.append((label, await collector(top_n=remaining)))
+            results.append((label, await collector(user_id=m.from_user.id, top_n=remaining)))
         except Exception as exc:
             errors.append(f"{label}: {str(exc)[:220]}")
     total_new = sum(item["new"] for _, item in results)
@@ -894,10 +875,8 @@ async def collect_top_ten(m: Message, state: FSMContext):
 
 @dp.message(F.text == "🔍 Проверить канал")
 async def verify_channel(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
     await state.clear()
-    channel = get_setting("channel")
+    channel = get_setting("channel", user_id=m.from_user.id)
     if not channel:
         await m.answer("⚠️ Канал ещё не сохранён. Нажми «📢 Мой канал» и укажи @username или ID.")
         return
@@ -940,8 +919,6 @@ async def verify_channel(m: Message, state: FSMContext):
 
 @dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS))
 async def fallback(m: Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        return
     if m.text in MENU_TEXTS:
         return
     await m.answer("🤔 Не понял. Используй кнопки снизу 👇", reply_markup=main_menu())
