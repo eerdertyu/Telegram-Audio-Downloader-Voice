@@ -751,6 +751,8 @@ async def manual_check(m: Message, state: FSMContext):
         )
         if stats["no_data"]:
             report += f"\nПрофилей без новых постов: {stats['no_data']}"
+        if any("HTTP 402" in err or "credits depleted" in err.lower() for err in stats["errors"]):
+            report += "\n\n💳 <b>X API исчерпал оплаченные кредиты (HTTP 402).</b> Пополни баланс/лимит проекта в X Developer Console. До восстановления кредитов X не отдаёт посты; Telegram-бот и его кнопки при этом работают."
         if stats["errors"]:
             report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
                 "• " + html.escape(err) for err in stats["errors"][:8]
@@ -781,6 +783,8 @@ async def collect_top_ten(m: Message, state: FSMContext):
             "Посты отсортированы по публичным реакциям X и свежести. "
             "Перевод выполнен автоматически."
         )
+        if any("HTTP 402" in err or "credits depleted" in err.lower() for err in stats["errors"]):
+            report += "\n\n💳 <b>X API исчерпал оплаченные кредиты (HTTP 402).</b> Пополни баланс/лимит проекта в X Developer Console. До восстановления кредитов X не отдаёт посты; Telegram-бот и его кнопки при этом работают."
         if stats["errors"]:
             report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
                 "• " + html.escape(err) for err in stats["errors"][:8]
