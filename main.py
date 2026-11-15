@@ -755,11 +755,10 @@ async def manual_check(m: Message, state: FSMContext):
             report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
                 "• " + html.escape(err) for err in stats["errors"][:8]
             )
-        await status_msg.edit_text(report, reply_markup=main_menu())
+        await status_msg.edit_text(report)
     except Exception as e:
         await status_msg.edit_text(
             f"❌ <b>Сбор X не выполнен</b>\n{html.escape(str(e)[:900])}",
-            reply_markup=main_menu()
         )
 
 
@@ -786,11 +785,10 @@ async def collect_top_ten(m: Message, state: FSMContext):
             report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
                 "• " + html.escape(err) for err in stats["errors"][:8]
             )
-        await status_msg.edit_text(report, reply_markup=main_menu())
+        await status_msg.edit_text(report)
     except Exception as e:
         await status_msg.edit_text(
             f"❌ <b>Не удалось собрать подборку</b>\n{html.escape(str(e)[:900])}",
-            reply_markup=main_menu()
         )
 
 
