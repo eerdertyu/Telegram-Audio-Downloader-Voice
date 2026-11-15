@@ -197,10 +197,12 @@ async def help_cmd(m: Message, state: FSMContext):
 # ================= ИСТОЧНИКИ =================
 @dp.message(F.text == "⏳ Очередь постов")
 async def pending_queue(m: Message, state: FSMContext):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
     await state.clear()
     con = db()
     rows = con.execute(
-        "SELECT post_id, text, source FROM pending ORDER BY rowid DESC LIMIT 10"
+        "SELECT post_id, text, image, source FROM pending ORDER BY rowid DESC LIMIT 10"
     ).fetchall()
     total = con.execute("SELECT COUNT(*) c FROM pending").fetchone()["c"]
     con.close()
@@ -212,16 +214,26 @@ async def pending_queue(m: Message, state: FSMContext):
         preview = (row["text"] or "").strip()
         preview = preview[:850] + ("…" if len(preview) > 850 else "")
         kb = make_kb(row["post_id"])
-        await m.answer(
-            f"🐦 <b>{html.escape(row['source'] or 'Источник')}</b>\n\n{preview}",
-            reply_markup=kb,
-            link_preview_options=NO_PREVIEW
-        )
+        card_text = f"🐦 <b>{html.escape(row['source'] or 'Источник')}</b>\n\n{preview}"
+        if row["image"]:
+            await m.answer_photo(
+                row["image"],
+                caption=card_text[:1024],
+                reply_markup=kb
+            )
+        else:
+            await m.answer(
+                card_text,
+                reply_markup=kb,
+                link_preview_options=NO_PREVIEW
+            )
     await m.answer("Выбери действие под каждым постом или вернись в меню.", reply_markup=main_menu())
 
 
 @dp.message(F.text == "🎧 Голосовые / MP3")
 async def audio_menu(m: Message, state: FSMContext):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
     await state.clear()
     await m.answer(
         "🎧 <b>Голосовые → MP3</b>\n\n"
@@ -489,6 +501,9 @@ def make_kb(post_id: str) -> InlineKeyboardMarkup:
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve(cb: CallbackQuery):
+    if not cb.from_user or cb.from_user.id != ADMIN_ID:
+        await cb.answer("Нет доступа.", show_alert=True)
+        return
     post_id = cb.data[len("approve_"):]
     con = db()
     row = con.execute("SELECT * FROM pending WHERE post_id=?", (post_id,)).fetchone()
@@ -543,6 +558,9 @@ async def approve(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject(cb: CallbackQuery):
+    if not cb.from_user or cb.from_user.id != ADMIN_ID:
+        await cb.answer("Нет доступа.", show_alert=True)
+        return
     post_id = cb.data[len("reject_"):]
     con = db()
     con.execute("DELETE FROM pending WHERE post_id=?", (post_id,))
@@ -656,9 +674,9 @@ async def fetch_tweets():
 
 @dp.message(F.text == "🔄 Проверить X сейчас")
 async def manual_check(m: Message, state: FSMContext):
-    await state.clear()
-    if m.from_user.id != ADMIN_ID:
+    if not m.from_user or m.from_user.id != ADMIN_ID:
         return
+    await state.clear()
     await m.answer("🔄 Проверяю источники X. Это может занять несколько секунд…")
     try:
         await fetch_tweets()
