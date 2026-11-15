@@ -16,7 +16,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     LinkPreviewOptions
 )
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -581,7 +581,7 @@ async def reject(cb: CallbackQuery):
     await cb.answer("❌ Отклонено")
 
 
-@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS))
+@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS) & ~StateFilter(Form.waiting_source, Form.waiting_telegram_source, Form.waiting_channel, Form.waiting_discussion, Form.waiting_template))
 async def fallback(m: Message, state: FSMContext):
     if m.from_user.id != ADMIN_ID:
         return
