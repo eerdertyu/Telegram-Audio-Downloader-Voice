@@ -16,7 +16,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     LinkPreviewOptions
 )
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -938,26 +938,7 @@ async def verify_channel(m: Message, state: FSMContext):
         )
 
 
-@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS) & ~StateFilter(Form.waiting_source, Form.waiting_telegram_source, Form.waiting_channel, Form.waiting_discussion, Form.waiting_template))
-async def fallback(m: Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        return
-    if m.text in MENU_TEXTS:
-        return
-    await m.answer("🤔 Не понял. Используй кнопки снизу 👇", reply_markup=main_menu())
-
-
-async def main():
-    init_db()
-    dp.include_router(audio_router)
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS) & ~StateFilter(Form.waiting_source, Form.waiting_telegram_source, Form.waiting_channel, Form.waiting_discussion, Form.waiting_template))
+@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS))
 async def fallback(m: Message, state: FSMContext):
     if m.from_user.id != ADMIN_ID:
         return
