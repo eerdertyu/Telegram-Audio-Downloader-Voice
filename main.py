@@ -606,9 +606,9 @@ def _rss_text(item):
     if content is not None and content.text:
         description = content.text
     # RSS descriptions contain HTML; Telegram receives plain translated text.
-    description = re.sub(r"<(script|style)\\b[^>]*>.*?</\\1>", " ", description, flags=re.I | re.S)
+    description = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", description, flags=re.I | re.S)
     description = re.sub(r"<[^>]+>", " ", description)
-    return re.sub(r"\\s+", " ", html.unescape(description)).strip()
+    return re.sub(r"\s+", " ", html.unescape(description)).strip()
 
 
 async def fetch_tweets(top_n=None):
@@ -654,7 +654,7 @@ async def fetch_tweets(top_n=None):
                     link = (item.findtext("link") or "").strip()
                     guid = (item.findtext("guid") or "").strip()
                     post_url = link or guid
-                    match = re.search(r"/status/(\\d+)", post_url)
+                    match = re.search(r"/status/(\d+)", post_url)
                     post_id = match.group(1) if match else (guid or post_url)
                     if not post_id:
                         continue
@@ -720,8 +720,8 @@ async def fetch_tweets(top_n=None):
             tpl_filled = html.escape(tpl, quote=False)
         emoji = random.choice(EMOJI_POOL)
         final = (
-            f"🐦 <b>{html.escape(item['source_name'])}</b>\\n\\n"
-            f"{emoji} {translated}\\n\\n{tpl_filled}"
+            f"🐦 <b>{html.escape(item['source_name'])}</b>\n\n"
+            f"{emoji} {translated}\n\n{tpl_filled}"
         ).strip()[:4096]
         try:
             kb = make_kb(item["post_id"])
