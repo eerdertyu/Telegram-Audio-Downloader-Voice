@@ -787,7 +787,7 @@ async def collect_top_ten(m: Message, state: FSMContext):
     await state.clear()
     status_msg = await m.answer(
         "⭐ Собираю до 10 лучших свежих постов со всех добавленных аккаунтов X. "
-        "Оценю их по лайкам, репостам, ответам и цитатам, переведу на русский и отправлю в очередь…"
+        "Отсортирую по свежести из бесплатных RSS-лент, переведу на русский и отправлю в очередь…"
     )
     try:
         stats = await fetch_tweets(top_n=10)
@@ -796,7 +796,7 @@ async def collect_top_ten(m: Message, state: FSMContext):
             f"Проверено источников: {stats['checked']} из {stats['sources']}\n"
             f"Новых кандидатов найдено: {stats['new']}\n"
             f"Отправлено в очередь модерации: <b>{stats['queued']}</b>\n"
-            "Посты отсортированы по свежести (бесплатная RSS-лента не отдаёт счётчики реакций). "
+            "Посты отсортированы по свежести. Бесплатная RSS-лента не предоставляет счётчики реакций. "
             "Перевод выполнен автоматически."
         )
         if any("HTTP 402" in err or "credits depleted" in err.lower() for err in stats["errors"]):
