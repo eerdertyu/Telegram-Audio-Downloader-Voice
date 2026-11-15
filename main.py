@@ -579,7 +579,7 @@ async def reject(cb: CallbackQuery):
     await cb.answer("❌ Отклонено")
 
 
-@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)"))
+@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS))
 async def fallback(m: Message, state: FSMContext):
     if m.from_user.id != ADMIN_ID:
         return
