@@ -4,6 +4,7 @@ import sqlite3
 import re
 import random
 import html
+import xml.etree.ElementTree as ET
 import aiohttp
 from datetime import datetime, timezone, timedelta
 
@@ -162,13 +163,13 @@ async def start(m: Message, state: FSMContext):
         "👋 <b>Привет!</b>\n\n"
         "Я бот-зеркало Twitter → Telegram.\n\n"
         "📌 <b>Что я умею:</b>\n"
-        "• Слежу за аккаунтами Twitter/X (до 50)\n"
+        "• Слежу за публичными аккаунтами X через бесплатные RSS (до 50)\n"
         "• Перевожу посты на русский\n"
         "• Скачиваю картинки\n"
         "• Присылаю превью на одобрение ✅\n"
         "• Публикую в канал после подтверждения\n"
         "• Собираю статистику 📈\n\n"
-        "⏱ Проверка источников: раз в 30 минут.\n\n"
+        "⏱ Проверка публичных профилей через бесплатные RSS-ленты: раз в 30 минут.\n\n"
         "📰 <b>Новости:</b> очередь на модерацию, ручная проверка X, источники, канал и шаблон.\n"
         "🎧 <b>Аудио:</b> отправляй голосовые — бот соберёт их и пришлёт MP3.\n\n"
         "👇 Выбери нужное действие в меню.",
@@ -598,21 +599,20 @@ def tweet_photo_url(tweet, media_by_key):
     return None
 
 
-async def x_api_get(session, url, params=None):
-    headers = {"Authorization": f"Bearer {X_BEARER_TOKEN}"}
-    async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
-        body = await response.text()
-        if response.status >= 400:
-            raise RuntimeError(f"X API HTTP {response.status}: {body[:500]}")
-        return await response.json()
+def _rss_text(item):
+    """Extract readable text from an RSS item."""
+    description = item.findtext("description") or ""
+    content = item.find("{http://purl.org/rss/1.0/modules/content/}encoded")
+    if content is not None and content.text:
+        description = content.text
+    # RSS descriptions contain HTML; Telegram receives plain translated text.
+    description = re.sub(r"<(script|style)\\b[^>]*>.*?</\\1>", " ", description, flags=re.I | re.S)
+    description = re.sub(r"<[^>]+>", " ", description)
+    return re.sub(r"\\s+", " ", html.unescape(description)).strip()
 
 
 async def fetch_tweets(top_n=None):
-    """Fetch recent tweets, translate them and queue for moderation.
-    Returns detailed counters; per-source failures are never silently swallowed.
-    """
-    if not X_BEARER_TOKEN:
-        raise RuntimeError("Не задан X_BEARER_TOKEN в Railway Variables.")
+    """Fetch public X profiles through FxEmbed RSS; no X API key or paid credits."""
     con = db()
     rows = con.execute("SELECT id, handle, name FROM sources WHERE source_type='x' ORDER BY id").fetchall()
     con.close()
@@ -622,38 +622,40 @@ async def fetch_tweets(top_n=None):
     stats = {"sources": len(rows), "checked": 0, "found": 0, "new": 0,
              "queued": 0, "seen": 0, "errors": [], "no_data": 0}
     candidates = []
-    async with aiohttp.ClientSession() as session:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; TelegramMirrorBot/1.0)",
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    }
+    timeout = aiohttp.ClientTimeout(total=35)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         for source in rows:
             handle = source["handle"]
             if not handle:
                 stats["errors"].append(f"{source['name'] or source['url']}: не сохранён username")
                 continue
             try:
-                user_data = await x_api_get(
-                    session, f"https://api.x.com/2/users/by/username/{handle}",
-                    {"user.fields": "id,name,username"}
-                )
-                user = user_data.get("data")
-                if not user:
-                    stats["errors"].append(f"@{handle}: профиль не найден или недоступен")
-                    continue
-                posts_data = await x_api_get(
-                    session, f"https://api.x.com/2/users/{user['id']}/tweets",
-                    {
-                        "max_results": 10, "exclude": "retweets,replies",
-                        "tweet.fields": "created_at,attachments,public_metrics",
-                        "expansions": "attachments.media_keys",
-                        "media.fields": "url,preview_image_url,type"
-                    }
-                )
+                feed_url = f"https://fxtwitter.com/{handle}/feed.xml?count=30"
+                async with session.get(feed_url) as response:
+                    body = await response.text()
+                    if response.status >= 400:
+                        raise RuntimeError(f"FxTwitter RSS HTTP {response.status}: {body[:180]}")
+                try:
+                    root = ET.fromstring(body)
+                except ET.ParseError as exc:
+                    raise RuntimeError(f"FxTwitter вернул некорректный RSS: {exc}") from exc
+
+                items = root.findall("./channel/item")
                 stats["checked"] += 1
-                media_by_key = {item["media_key"]: item for item in posts_data.get("includes", {}).get("media", [])}
-                tweets = posts_data.get("data", []) or []
-                stats["found"] += len(tweets)
-                if not tweets:
+                stats["found"] += len(items)
+                if not items:
                     stats["no_data"] += 1
-                for tweet in tweets:
-                    post_id = str(tweet.get("id", ""))
+
+                for item in items:
+                    link = (item.findtext("link") or "").strip()
+                    guid = (item.findtext("guid") or "").strip()
+                    post_url = link or guid
+                    match = re.search(r"/status/(\\d+)", post_url)
+                    post_id = match.group(1) if match else (guid or post_url)
                     if not post_id:
                         continue
                     con = db()
@@ -662,50 +664,64 @@ async def fetch_tweets(top_n=None):
                     if exists:
                         stats["seen"] += 1
                         continue
-                    raw = (tweet.get("text") or "").strip()[:3500]
+
+                    raw = _rss_text(item)[:3500]
+                    if not raw:
+                        raw = (item.findtext("title") or "").strip()[:3500]
                     if not raw:
                         continue
-                    metrics = tweet.get("public_metrics") or {}
-                    score = (
-                        int(metrics.get("like_count", 0) or 0)
-                        + 2 * int(metrics.get("retweet_count", 0) or 0)
-                        + 2 * int(metrics.get("reply_count", 0) or 0)
-                        + int(metrics.get("quote_count", 0) or 0)
-                    )
+                    enclosure = item.find("enclosure")
+                    image_url = None
+                    if enclosure is not None:
+                        media_type = (enclosure.attrib.get("type") or "").lower()
+                        candidate_url = enclosure.attrib.get("url")
+                        if candidate_url and (media_type.startswith("image/") or not media_type):
+                            image_url = candidate_url
+                    if not image_url:
+                        media_thumb = item.find("{http://search.yahoo.com/mrss/}thumbnail")
+                        if media_thumb is not None:
+                            image_url = media_thumb.attrib.get("url")
+
+                    pub_date = item.findtext("pubDate") or ""
+                    try:
+                        created_at = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %z").isoformat()
+                    except Exception:
+                        created_at = pub_date
                     candidates.append({
-                        "post_id": post_id, "raw": raw, "score": score,
+                        "post_id": post_id, "raw": raw, "score": 0,
                         "handle": handle, "source_name": source["name"] or "@" + handle,
-                        "image": tweet_photo_url(tweet, media_by_key),
-                        "created_at": tweet.get("created_at", "")
+                        "image": image_url, "created_at": created_at,
+                        "link": post_url or f"https://x.com/{handle}/status/{post_id}",
                     })
             except Exception as e:
                 detail = f"@{handle}: {type(e).__name__}: {str(e)[:220]}"
                 stats["errors"].append(detail)
-                print(f"[x] fetch failed {detail}")
+                print(f"[rss] fetch failed {detail}")
             await asyncio.sleep(1)
 
+    # RSS does not expose reliable public engagement counters, so top-10 is sorted by recency.
+    candidates.sort(key=lambda item: item["created_at"], reverse=True)
     if top_n:
-        candidates.sort(key=lambda item: (item["score"], item["created_at"]), reverse=True)
         candidates = candidates[:top_n]
     stats["new"] = len(candidates)
 
     for item in candidates:
         translated = await asyncio.to_thread(translate_text, item["raw"])
         translated = html.escape(translated or item["raw"])
-        link = f"https://x.com/{item['handle']}/status/{item['post_id']}"
+        link = item["link"]
         tpl = get_setting("template", "Источник: {link}") or ""
-        tpl_filled = html.escape(tpl.replace("{link}", link), quote=False)
-        # Preserve the link as a clickable HTML anchor even when the template is empty.
-        if "{link}" in (get_setting("template", "Источник: {link}") or ""):
-            tpl_filled = (get_setting("template", "Источник: {link}") or "").replace(
+        if "{link}" in tpl:
+            tpl_filled = html.escape(tpl, quote=False).replace(
                 "{link}", f'<a href="{link}">Оригинал в X</a>'
             )
         elif not tpl:
             tpl_filled = f'<a href="{link}">Оригинал в X</a>'
+        else:
+            tpl_filled = html.escape(tpl, quote=False)
         emoji = random.choice(EMOJI_POOL)
         final = (
-            f"🐦 <b>{html.escape(item['source_name'])}</b>\n\n"
-            f"{emoji} {translated}\n\n{tpl_filled}"
+            f"🐦 <b>{html.escape(item['source_name'])}</b>\\n\\n"
+            f"{emoji} {translated}\\n\\n{tpl_filled}"
         ).strip()[:4096]
         try:
             kb = make_kb(item["post_id"])
@@ -730,7 +746,7 @@ async def fetch_tweets(top_n=None):
             stats["queued"] += 1
         except Exception as e:
             stats["errors"].append(f"Не удалось отправить @{item['handle']}/{item['post_id']}: {str(e)[:180]}")
-            print(f"[x] send to moderation failed: {e}")
+            print(f"[rss] send to moderation failed: {e}")
     return stats
 
 @dp.message(F.text == "🔄 Проверить X сейчас")
@@ -745,7 +761,7 @@ async def manual_check(m: Message, state: FSMContext):
             "✅ <b>Проверка X завершена</b>\n\n"
             f"Источников в базе: {stats['sources']}\n"
             f"Успешно проверено: {stats['checked']}\n"
-            f"Постов получено от X: {stats['found']}\n"
+            f"Постов получено из бесплатной RSS-ленты: {stats['found']}\n"
             f"Уже видели: {stats['seen']}\n"
             f"Новых добавлено в очередь: <b>{stats['queued']}</b>"
         )
@@ -780,7 +796,7 @@ async def collect_top_ten(m: Message, state: FSMContext):
             f"Проверено источников: {stats['checked']} из {stats['sources']}\n"
             f"Новых кандидатов найдено: {stats['new']}\n"
             f"Отправлено в очередь модерации: <b>{stats['queued']}</b>\n"
-            "Посты отсортированы по публичным реакциям X и свежести. "
+            "Посты отсортированы по свежести (бесплатная RSS-лента не отдаёт счётчики реакций). "
             "Перевод выполнен автоматически."
         )
         if any("HTTP 402" in err or "credits depleted" in err.lower() for err in stats["errors"]):
