@@ -111,19 +111,22 @@ def set_setting(key, value):
 def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text="⏳ Очередь постов"), KeyboardButton(text="🔄 Проверить X сейчас")],
             [KeyboardButton(text="📡 Источники"), KeyboardButton(text="➕ Добавить источник")],
             [KeyboardButton(text="📢 Мой канал"), KeyboardButton(text="💬 Чат обсуждений")],
             [KeyboardButton(text="📝 Шаблон поста"), KeyboardButton(text="📈 Статистика за день")],
-            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="ℹ️ Помощь")]
+            [KeyboardButton(text="🎧 Голосовые / MP3"), KeyboardButton(text="📊 Статус")],
+            [KeyboardButton(text="ℹ️ Помощь")]
         ],
         resize_keyboard=True
     )
 
 
 MENU_TEXTS = [
+    "⏳ Очередь постов", "🔄 Проверить X сейчас",
     "📡 Источники", "➕ Добавить источник", "📢 Мой канал",
     "💬 Чат обсуждений", "📝 Шаблон поста", "📈 Статистика за день",
-    "📊 Статус", "ℹ️ Помощь"
+    "🎧 Голосовые / MP3", "📊 Статус", "ℹ️ Помощь"
 ]
 
 
@@ -165,7 +168,12 @@ async def start(m: Message, state: FSMContext):
         "• Публикую в канал после подтверждения\n"
         "• Собираю статистику 📈\n\n"
         "⏱ Проверка источников: раз в 30 минут.\n\n"
-        "👇 Жми кнопки снизу.",
+        "📰 <b>Новости:</b> очередь на модерацию, ручная проверка X, источники, канал и шаблон.
+"
+        "🎧 <b>Аудио:</b> отправляй голосовые — бот соберёт их и пришлёт MP3.
+
+"
+        "👇 Выбери нужное действие в меню.",
         reply_markup=main_menu()
     )
 
@@ -190,6 +198,45 @@ async def help_cmd(m: Message, state: FSMContext):
 
 
 # ================= ИСТОЧНИКИ =================
+@dp.message(F.text == "⏳ Очередь постов")
+async def pending_queue(m: Message, state: FSMContext):
+    await state.clear()
+    con = db()
+    rows = con.execute(
+        "SELECT post_id, text, source FROM pending ORDER BY rowid DESC LIMIT 10"
+    ).fetchall()
+    total = con.execute("SELECT COUNT(*) c FROM pending").fetchone()["c"]
+    con.close()
+    if not rows:
+        await m.answer("✅ Очередь пуста. Новых постов на модерации нет.", reply_markup=main_menu())
+        return
+    await m.answer(f"⏳ <b>Очередь модерации: {total}</b>\nПоказываю последние {len(rows)} постов:")
+    for row in rows:
+        preview = (row["text"] or "").strip()
+        preview = preview[:850] + ("…" if len(preview) > 850 else "")
+        kb = make_kb(row["post_id"])
+        await m.answer(
+            f"🐦 <b>{html.escape(row['source'] or 'Источник')}</b>\n\n{preview}",
+            reply_markup=kb,
+            link_preview_options=NO_PREVIEW
+        )
+    await m.answer("Выбери действие под каждым постом или вернись в меню.", reply_markup=main_menu())
+
+
+@dp.message(F.text == "🎧 Голосовые / MP3")
+async def audio_menu(m: Message, state: FSMContext):
+    await state.clear()
+    await m.answer(
+        "🎧 <b>Голосовые → MP3</b>\n\n"
+        "Отправляй голосовые подряд — после паузы бот автоматически пришлёт MP3.\n"
+        "/name название — задать имя файлов\n"
+        "/name — сбросить имя\n"
+        "/done — обработать партию сейчас\n"
+        "/cancel — очистить очередь",
+        reply_markup=main_menu()
+    )
+
+
 @dp.message(F.text == "📡 Источники")
 async def sources(m: Message, state: FSMContext):
     await state.clear()
@@ -608,6 +655,22 @@ async def fetch_tweets():
             except Exception as e:
                 print(f"[x] fetch failed @{handle}: {e}")
             await asyncio.sleep(2)
+
+
+@dp.message(F.text == "🔄 Проверить X сейчас")
+async def manual_check(m: Message, state: FSMContext):
+    await state.clear()
+    if m.from_user.id != ADMIN_ID:
+        return
+    await m.answer("🔄 Проверяю источники X. Это может занять несколько секунд…")
+    try:
+        await fetch_tweets()
+        con = db()
+        total = con.execute("SELECT COUNT(*) c FROM pending").fetchone()["c"]
+        con.close()
+        await m.answer(f"✅ Проверка завершена. Сейчас в очереди на модерацию: {total}.", reply_markup=main_menu())
+    except Exception as e:
+        await m.answer(f"❌ Ошибка проверки X: {html.escape(str(e)[:700])}", reply_markup=main_menu())
 
 
 async def scheduler():
