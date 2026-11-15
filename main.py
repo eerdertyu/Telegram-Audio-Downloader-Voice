@@ -112,6 +112,7 @@ def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="⏳ Очередь постов"), KeyboardButton(text="🔄 Проверить X сейчас")],
+            [KeyboardButton(text="⭐ Собрать топ-10 X"), KeyboardButton(text="🔍 Проверить канал")],
             [KeyboardButton(text="📡 Источники"), KeyboardButton(text="➕ Добавить источник")],
             [KeyboardButton(text="📢 Мой канал"), KeyboardButton(text="💬 Чат обсуждений")],
             [KeyboardButton(text="📝 Шаблон поста"), KeyboardButton(text="📈 Статистика за день")],
@@ -123,7 +124,7 @@ def main_menu():
 
 
 MENU_TEXTS = [
-    "⏳ Очередь постов", "🔄 Проверить X сейчас",
+    "⏳ Очередь постов", "🔄 Проверить X сейчас", "⭐ Собрать топ-10 X", "🔍 Проверить канал",
     "📡 Источники", "➕ Добавить источник", "📢 Мой канал",
     "💬 Чат обсуждений", "📝 Шаблон поста", "📈 Статистика за день",
     "🎧 Голосовые / MP3", "📊 Статус", "ℹ️ Помощь"
@@ -186,7 +187,9 @@ async def help_cmd(m: Message, state: FSMContext):
         "💬 <b>Чат обсуждений</b> — ID привязанного чата\n"
         "📝 <b>Шаблон поста</b> — текст внизу поста\n"
         "📈 <b>Статистика за день</b>\n"
-        "📊 <b>Статус</b> — общая сводка\n\n"
+        "📊 <b>Статус</b> — общая сводка\n"
+        "⭐ <b>Собрать топ-10 X</b> — выбрать 10 лучших свежих постов из всех источников\n"
+        "🔍 <b>Проверить канал</b> — проверить права бота на публикацию\n\n"
         "✅ Одобряй посты кнопками под превью.\n\n"
         "⚠️ Для полной статистики реакций нужен webhook — "
         "сейчас показывается базовая статистика.",
@@ -604,33 +607,52 @@ async def x_api_get(session, url, params=None):
         return await response.json()
 
 
-async def fetch_tweets():
+async def fetch_tweets(top_n=None):
+    """Fetch recent tweets, translate them and queue for moderation.
+    Returns detailed counters; per-source failures are never silently swallowed.
+    """
     if not X_BEARER_TOKEN:
-        raise RuntimeError("Не задан X_BEARER_TOKEN. Добавь Bearer Token из X Developer Portal в Railway Variables.")
+        raise RuntimeError("Не задан X_BEARER_TOKEN в Railway Variables.")
     con = db()
     rows = con.execute("SELECT id, handle, name FROM sources WHERE source_type='x' ORDER BY id").fetchall()
     con.close()
     if not rows:
-        return
+        raise RuntimeError("В базе нет источников X. Добавь хотя бы один аккаунт через «Добавить источник».")
+
+    stats = {"sources": len(rows), "checked": 0, "found": 0, "new": 0,
+             "queued": 0, "seen": 0, "errors": [], "no_data": 0}
+    candidates = []
     async with aiohttp.ClientSession() as session:
         for source in rows:
             handle = source["handle"]
             if not handle:
+                stats["errors"].append(f"{source['name'] or source['url']}: не сохранён username")
                 continue
             try:
-                user_data = await x_api_get(session, f"https://api.x.com/2/users/by/username/{handle}", {"user.fields": "id,name,username"})
+                user_data = await x_api_get(
+                    session, f"https://api.x.com/2/users/by/username/{handle}",
+                    {"user.fields": "id,name,username"}
+                )
                 user = user_data.get("data")
                 if not user:
-                    print(f"[x] profile not found: @{handle}")
+                    stats["errors"].append(f"@{handle}: профиль не найден или недоступен")
                     continue
-                posts_data = await x_api_get(session, f"https://api.x.com/2/users/{user['id']}/tweets", {
-                    "max_results": 10, "exclude": "retweets,replies",
-                    "tweet.fields": "created_at,attachments",
-                    "expansions": "attachments.media_keys",
-                    "media.fields": "url,preview_image_url,type"
-                })
+                posts_data = await x_api_get(
+                    session, f"https://api.x.com/2/users/{user['id']}/tweets",
+                    {
+                        "max_results": 10, "exclude": "retweets,replies",
+                        "tweet.fields": "created_at,attachments,public_metrics",
+                        "expansions": "attachments.media_keys",
+                        "media.fields": "url,preview_image_url,type"
+                    }
+                )
+                stats["checked"] += 1
                 media_by_key = {item["media_key"]: item for item in posts_data.get("includes", {}).get("media", [])}
-                for tweet in reversed(posts_data.get("data", [])):
+                tweets = posts_data.get("data", []) or []
+                stats["found"] += len(tweets)
+                if not tweets:
+                    stats["no_data"] += 1
+                for tweet in tweets:
                     post_id = str(tweet.get("id", ""))
                     if not post_id:
                         continue
@@ -638,55 +660,184 @@ async def fetch_tweets():
                     exists = con.execute("SELECT 1 FROM seen WHERE post_id=?", (post_id,)).fetchone()
                     con.close()
                     if exists:
+                        stats["seen"] += 1
                         continue
                     raw = (tweet.get("text") or "").strip()[:3500]
                     if not raw:
                         continue
-                    translated = await asyncio.to_thread(translate_text, raw)
-                    translated = html.escape(translated or "")
-                    link = f"https://x.com/{handle}/status/{post_id}"
-                    image = tweet_photo_url(tweet, media_by_key)
-                    tpl = get_setting("template", "Источник: {link}") or ""
-                    tpl_filled = tpl.replace("{link}", link)
-                    header = f"🐦 <b>{html.escape(source['name'] or '@' + handle)}</b>\n\n"
-                    emoji = random.choice(EMOJI_POOL)
-                    final = f"{header}{emoji} {translated}\n\n{tpl_filled}".strip()[:4096]
-                    kb = make_kb(post_id)
-                    try:
-                        if image:
-                            msg = await bot.send_photo(ADMIN_ID, image, caption=final[:1024], reply_markup=kb)
-                            if len(final) > 1024:
-                                await bot.send_message(ADMIN_ID, final[1024:], link_preview_options=NO_PREVIEW)
-                        else:
-                            msg = await bot.send_message(ADMIN_ID, final[:4096], reply_markup=kb, link_preview_options=NO_PREVIEW)
-                        con = db()
-                        con.execute("INSERT OR REPLACE INTO pending (post_id, text, image, source, admin_msg_id) VALUES (?,?,?,?,?)",
-                                    (post_id, final, image, f"@{handle}", msg.message_id))
-                        con.execute("INSERT OR IGNORE INTO seen (post_id) VALUES (?)", (post_id,))
-                        con.commit()
-                        con.close()
-                    except Exception as e:
-                        print(f"[x] send to moderation failed @{handle}/{post_id}: {e}")
+                    metrics = tweet.get("public_metrics") or {}
+                    score = (
+                        int(metrics.get("like_count", 0) or 0)
+                        + 2 * int(metrics.get("retweet_count", 0) or 0)
+                        + 2 * int(metrics.get("reply_count", 0) or 0)
+                        + int(metrics.get("quote_count", 0) or 0)
+                    )
+                    candidates.append({
+                        "post_id": post_id, "raw": raw, "score": score,
+                        "handle": handle, "source_name": source["name"] or "@" + handle,
+                        "image": tweet_photo_url(tweet, media_by_key),
+                        "created_at": tweet.get("created_at", "")
+                    })
             except Exception as e:
-                print(f"[x] fetch failed @{handle}: {e}")
-            await asyncio.sleep(2)
+                detail = f"@{handle}: {type(e).__name__}: {str(e)[:220]}"
+                stats["errors"].append(detail)
+                print(f"[x] fetch failed {detail}")
+            await asyncio.sleep(1)
 
+    if top_n:
+        candidates.sort(key=lambda item: (item["score"], item["created_at"]), reverse=True)
+        candidates = candidates[:top_n]
+    stats["new"] = len(candidates)
+
+    for item in candidates:
+        translated = await asyncio.to_thread(translate_text, item["raw"])
+        translated = html.escape(translated or item["raw"])
+        link = f"https://x.com/{item['handle']}/status/{item['post_id']}"
+        tpl = get_setting("template", "Источник: {link}") or ""
+        tpl_filled = html.escape(tpl.replace("{link}", link), quote=False)
+        # Preserve the link as a clickable HTML anchor even when the template is empty.
+        if "{link}" in (get_setting("template", "Источник: {link}") or ""):
+            tpl_filled = (get_setting("template", "Источник: {link}") or "").replace(
+                "{link}", f'<a href="{link}">Оригинал в X</a>'
+            )
+        elif not tpl:
+            tpl_filled = f'<a href="{link}">Оригинал в X</a>'
+        emoji = random.choice(EMOJI_POOL)
+        final = (
+            f"🐦 <b>{html.escape(item['source_name'])}</b>\n\n"
+            f"{emoji} {translated}\n\n{tpl_filled}"
+        ).strip()[:4096]
+        try:
+            kb = make_kb(item["post_id"])
+            if item["image"]:
+                msg = await bot.send_photo(
+                    ADMIN_ID, item["image"], caption=final[:1024], reply_markup=kb
+                )
+                if len(final) > 1024:
+                    await bot.send_message(ADMIN_ID, final[1024:], link_preview_options=NO_PREVIEW)
+            else:
+                msg = await bot.send_message(
+                    ADMIN_ID, final, reply_markup=kb, link_preview_options=NO_PREVIEW
+                )
+            con = db()
+            con.execute(
+                "INSERT OR REPLACE INTO pending (post_id, text, image, source, admin_msg_id) VALUES (?,?,?,?,?)",
+                (item["post_id"], final, item["image"], f"@{item['handle']}", msg.message_id)
+            )
+            con.execute("INSERT OR IGNORE INTO seen (post_id) VALUES (?)", (item["post_id"],))
+            con.commit()
+            con.close()
+            stats["queued"] += 1
+        except Exception as e:
+            stats["errors"].append(f"Не удалось отправить @{item['handle']}/{item['post_id']}: {str(e)[:180]}")
+            print(f"[x] send to moderation failed: {e}")
+    return stats
 
 @dp.message(F.text == "🔄 Проверить X сейчас")
 async def manual_check(m: Message, state: FSMContext):
     if not m.from_user or m.from_user.id != ADMIN_ID:
         return
     await state.clear()
-    await m.answer("🔄 Проверяю источники X. Это может занять несколько секунд…")
+    status_msg = await m.answer("🔄 Запускаю проверку X…")
     try:
-        await fetch_tweets()
-        con = db()
-        total = con.execute("SELECT COUNT(*) c FROM pending").fetchone()["c"]
-        con.close()
-        await m.answer(f"✅ Проверка завершена. Сейчас в очереди на модерацию: {total}.", reply_markup=main_menu())
+        stats = await fetch_tweets()
+        report = (
+            "✅ <b>Проверка X завершена</b>\n\n"
+            f"Источников в базе: {stats['sources']}\n"
+            f"Успешно проверено: {stats['checked']}\n"
+            f"Постов получено от X: {stats['found']}\n"
+            f"Уже видели: {stats['seen']}\n"
+            f"Новых добавлено в очередь: <b>{stats['queued']}</b>"
+        )
+        if stats["no_data"]:
+            report += f"\nПрофилей без новых постов: {stats['no_data']}"
+        if stats["errors"]:
+            report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
+                "• " + html.escape(err) for err in stats["errors"][:8]
+            )
+        await status_msg.edit_text(report, reply_markup=main_menu())
     except Exception as e:
-        await m.answer(f"❌ Ошибка проверки X: {html.escape(str(e)[:700])}", reply_markup=main_menu())
+        await status_msg.edit_text(
+            f"❌ <b>Сбор X не выполнен</b>\n{html.escape(str(e)[:900])}",
+            reply_markup=main_menu()
+        )
 
+
+@dp.message(F.text == "⭐ Собрать топ-10 X")
+async def collect_top_ten(m: Message, state: FSMContext):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    status_msg = await m.answer(
+        "⭐ Собираю до 10 лучших свежих постов со всех добавленных аккаунтов X. "
+        "Оценю их по лайкам, репостам, ответам и цитатам, переведу на русский и отправлю в очередь…"
+    )
+    try:
+        stats = await fetch_tweets(top_n=10)
+        report = (
+            "⭐ <b>Подборка готова</b>\n\n"
+            f"Проверено источников: {stats['checked']} из {stats['sources']}\n"
+            f"Новых кандидатов найдено: {stats['new']}\n"
+            f"Отправлено в очередь модерации: <b>{stats['queued']}</b>\n"
+            "Посты отсортированы по публичным реакциям X и свежести. "
+            "Перевод выполнен автоматически."
+        )
+        if stats["errors"]:
+            report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
+                "• " + html.escape(err) for err in stats["errors"][:8]
+            )
+        await status_msg.edit_text(report, reply_markup=main_menu())
+    except Exception as e:
+        await status_msg.edit_text(
+            f"❌ <b>Не удалось собрать подборку</b>\n{html.escape(str(e)[:900])}",
+            reply_markup=main_menu()
+        )
+
+
+@dp.message(F.text == "🔍 Проверить канал")
+async def verify_channel(m: Message, state: FSMContext):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    channel = get_setting("channel")
+    if not channel:
+        await m.answer("⚠️ Канал ещё не сохранён. Нажми «📢 Мой канал» и укажи @username или ID.")
+        return
+    target = int(channel) if channel.lstrip("-").isdigit() else channel
+    try:
+        chat = await bot.get_chat(target)
+        me = await bot.get_me()
+        member = await bot.get_chat_member(target, me.id)
+        if member.status not in ("administrator", "creator"):
+            await m.answer(
+                f"❌ Бот найден в «{html.escape(chat.title or str(target))}», "
+                f"но его статус: {member.status}. Нужны права администратора.",
+                reply_markup=main_menu()
+            )
+            return
+        can_post = getattr(member, "can_post_messages", None)
+        if can_post is False:
+            await m.answer(
+                "❌ Бот администратор, но право «Публикация сообщений» выключено. "
+                "Включи его в настройках администраторов канала.",
+                reply_markup=main_menu()
+            )
+            return
+        await m.answer(
+            "✅ <b>Канал подключён</b>\n\n"
+            f"Название: {html.escape(chat.title or 'без названия')}\n"
+            f"ID: <code>{chat.id}</code>\n"
+            f"Статус бота: <b>{member.status}</b>\n"
+            f"Право публикации: {'разрешено' if can_post is not False else 'не разрешено'}\n\n"
+            "Это проверка доступа Bot API; пробный пост в канал не отправлялся.",
+            reply_markup=main_menu()
+        )
+    except Exception as e:
+        await m.answer(
+            f"❌ Не удалось проверить канал: {html.escape(str(e)[:700])}\n"
+            "Проверь, что бот добавлен администратором, а username/ID указан верно.",
+            reply_markup=main_menu()
+        )
 
 async def scheduler():
     await asyncio.sleep(10)
