@@ -18,7 +18,7 @@ from telegram.ext import (
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 IDLE_SECONDS = int(os.getenv("BATCH_IDLE_SECONDS", "8"))
-MAX_BATCH_SIZE = 10
+MAX_BATCH_SIZE = 50
 MAX_VOICE_BYTES = 20 * 1024 * 1024
 
 logging.basicConfig(
@@ -60,7 +60,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "«кефир 2.mp3» и т. д.)\n"
         "/name — сбросить имя, файлы будут «1.mp3», «2.mp3»...\n"
         "Отправь голосовые сообщения подряд — я соберу их в одну партию "
-        "и отправлю MP3 после паузы. До 10 файлов отправляю одной группой.\n"
+        "и отправлю MP3 после паузы. До 50 файлов отправляю одной группой.\n"
         "/done — закончить партию сейчас\n"
         "/cancel — отменить ещё не обработанную партию"
     )
