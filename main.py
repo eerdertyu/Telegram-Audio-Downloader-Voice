@@ -751,6 +751,124 @@ async def fetch_tweets(top_n=None):
             print(f"[rss] send to moderation failed: {e}")
     return stats
 
+
+
+@dp.message(F.text == "📨 Источники Telegram")
+async def telegram_sources(m: Message, state: FSMContext):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    con = db()
+    rows = con.execute("SELECT id, url, name FROM sources WHERE source_type='telegram' ORDER BY id").fetchall()
+    con.close()
+    if not rows:
+        await m.answer("📭 Каналы Telegram не добавлены. Нажми «➕ Добавить Telegram».", reply_markup=main_menu())
+        return
+    message = "📨 <b>Публичные каналы Telegram:</b>\n\n"
+    buttons = []
+    for row in rows:
+        message += f"• {html.escape(row['name'] or row['url'])}\n"
+        buttons.append([InlineKeyboardButton(text=f"❌ Удалить: {(row['name'] or row['url'])[:30]}", callback_data=f"del_{row['id']}")])
+    await m.answer(message, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await m.answer("Меню:", reply_markup=main_menu())
+
+
+@dp.message(F.text == "➕ Добавить Telegram")
+async def add_telegram_prompt(m: Message, state: FSMContext):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(Form.waiting_telegram_source)
+    await m.answer("Пришли username или ссылку на публичный Telegram-канал:\n<code>@durov</code> или <code>https://t.me/durov</code>\n\nМожно добавить подпись через |. Поддерживаются только публичные каналы.")
+
+
+@dp.message(Form.waiting_telegram_source)
+async def save_telegram_source(m: Message, state: FSMContext):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
+    raw = (m.text or "").strip()
+    profile, name = (raw.split("|", 1) + [""])[:2] if "|" in raw else (raw, "")
+    profile, name = profile.strip(), name.strip()
+    found = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z0-9_]{5,})", profile, re.I)
+    handle = found.group(1) if found else profile.lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,}", handle):
+        await m.answer("Не распознал канал. Пришли @username или https://t.me/username")
+        return
+    con = db()
+    try:
+        con.execute("INSERT INTO sources (url, name, source_type, handle) VALUES (?,?,?,?)",
+                    (f"https://t.me/{handle}", name or handle, "telegram", handle))
+        con.commit()
+        await m.answer(f"✅ Канал добавлен: <a href='https://t.me/{handle}'>@{handle}</a>", reply_markup=main_menu())
+        await state.clear()
+    except sqlite3.IntegrityError:
+        await m.answer("Этот канал уже добавлен.", reply_markup=main_menu())
+    finally:
+        con.close()
+
+
+async def fetch_telegram_posts(top_n=10):
+    con = db()
+    sources = con.execute("SELECT id, handle, name FROM sources WHERE source_type='telegram' ORDER BY id").fetchall()
+    con.close()
+    stats = {"sources": len(sources), "checked": 0, "new": 0, "queued": 0, "errors": [], "found": 0}
+    async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}, timeout=aiohttp.ClientTimeout(total=30)) as session:
+        for source in sources:
+            handle = source["handle"]
+            try:
+                async with session.get(f"https://t.me/s/{handle}") as response:
+                    body = await response.text()
+                    if response.status >= 400:
+                        raise RuntimeError(f"t.me HTTP {response.status}")
+                matches = list(re.finditer(r'data-post=["\']' + re.escape(handle) + r'/(\d+)["\']', body))
+                stats["checked"] += 1
+                stats["found"] += len(matches)
+                candidates = []
+                for i, match in enumerate(matches):
+                    segment = body[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(body)]
+                    post_id = match.group(1)
+                    uid = f"tg:{handle}/{post_id}"
+                    con = db()
+                    exists = con.execute("SELECT 1 FROM seen WHERE post_id=?", (uid,)).fetchone()
+                    con.close()
+                    if exists:
+                        continue
+                    tm = re.search(r'<div class=["\'][^"\']*tgme_widget_message_text[^"\']*["\'][^>]*>(.*?)</div>', segment, re.S | re.I)
+                    raw = tm.group(1) if tm else ""
+                    raw = re.sub(r"<br\s*/?>", "\n", raw, flags=re.I)
+                    raw = re.sub(r"<[^>]+>", " ", raw)
+                    raw = re.sub(r"\s+", " ", html.unescape(raw)).strip()
+                    if not raw:
+                        continue
+                    pm = re.search(r'tgme_widget_message_photo_wrap[^>]*style=["\'][^"\']*background-image:url\(["\']?([^"\')]+)', segment, re.I)
+                    image_url = html.unescape(pm.group(1)) if pm else None
+                    candidates.append((int(post_id), uid, raw[:3500], image_url))
+                candidates.sort(reverse=True)
+                for post_num, uid, raw, image_url in candidates[:top_n]:
+                    translated = await asyncio.to_thread(translate_text, raw)
+                    translated = html.escape(translated or raw)
+                    link = f"https://t.me/{handle}/{post_num}"
+                    template = get_setting("template", "🔥 #новости") or ""
+                    footer = html.escape(template, quote=False).replace("{link}", f'<a href="{link}">Оригинал в Telegram</a>') if template else f'<a href="{link}">Оригинал в Telegram</a>'
+                    final = f"📨 <b>{html.escape(source['name'] or '@' + handle)}</b>\n\n{random.choice(EMOJI_POOL)} {translated}\n\n{footer}"[:4096]
+                    kb = make_kb(uid)
+                    if image_url:
+                        msg = await bot.send_photo(ADMIN_ID, image_url, caption=final[:1024], reply_markup=kb)
+                    else:
+                        msg = await bot.send_message(ADMIN_ID, final, reply_markup=kb, link_preview_options=NO_PREVIEW)
+                    con = db()
+                    con.execute("INSERT OR REPLACE INTO pending (post_id, text, image, source, admin_msg_id) VALUES (?,?,?,?,?)",
+                                (uid, final, image_url, f"Telegram @{handle}", msg.message_id))
+                    con.execute("INSERT OR IGNORE INTO seen (post_id) VALUES (?)", (uid,))
+                    con.commit()
+                    con.close()
+                    stats["new"] += 1
+                    stats["queued"] += 1
+            except Exception as exc:
+                stats["errors"].append(f"@{handle}: {type(exc).__name__}: {str(exc)[:180]}")
+            await asyncio.sleep(0.5)
+    return stats
+
+
 @dp.message(F.text == "🔄 Проверить X сейчас")
 async def manual_check(m: Message, state: FSMContext):
     if not m.from_user or m.from_user.id != ADMIN_ID:
