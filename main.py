@@ -127,9 +127,9 @@ def main_menu():
 
 
 MENU_TEXTS = [
-    "⏳ Очередь постов", "🔄 Проверить X сейчас", "⭐ Собрать топ-10 X", "🔍 Проверить канал",
-    "📡 Источники", "➕ Добавить источник", "📢 Мой канал",
-    "💬 Чат обсуждений", "📝 Шаблон поста", "📈 Статистика за день",
+    "⏳ Очередь постов", "⭐ Собрать топ-10 новых", "🔍 Проверить канал",
+    "📡 Источники X", "➕ Добавить X", "📨 Источники Telegram", "➕ Добавить Telegram",
+    "📢 Мой канал", "💬 Чат обсуждений", "📝 Шаблон поста", "📈 Статистика за день",
     "🎧 Голосовые / MP3", "📊 Статус", "ℹ️ Помощь"
 ]
 
@@ -452,12 +452,12 @@ async def status(m: Message, state: FSMContext):
     con = db()
     seen = con.execute("SELECT COUNT(*) c FROM seen").fetchone()["c"]
     pend = con.execute("SELECT COUNT(*) c FROM pending").fetchone()["c"]
-    srcs = con.execute("SELECT COUNT(*) c FROM sources WHERE source_type='x'").fetchone()["c"]
+    srcs = con.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"]
     pub = con.execute("SELECT COUNT(*) c FROM published").fetchone()["c"]
     con.close()
     await m.answer(
         f"📊 <b>Статус</b>\n\n"
-        f"📡 Источников: {srcs}\n"
+        f"📡 Источников X и Telegram: {srcs}\n"
         f"✅ Обработано: {seen}\n"
         f"📤 Опубликовано: {pub}\n"
         f"⏳ В очереди: {pend}\n"
@@ -870,35 +870,6 @@ async def fetch_telegram_posts(top_n=10):
     return stats
 
 
-@dp.message(F.text == "🔄 Проверить X сейчас")
-async def manual_check(m: Message, state: FSMContext):
-    if not m.from_user or m.from_user.id != ADMIN_ID:
-        return
-    await state.clear()
-    status_msg = await m.answer("🔄 Запускаю проверку X…")
-    try:
-        stats = await fetch_tweets()
-        report = (
-            "✅ <b>Проверка X завершена</b>\n\n"
-            f"Источников в базе: {stats['sources']}\n"
-            f"Успешно проверено: {stats['checked']}\n"
-            f"Постов получено из бесплатной RSS-ленты: {stats['found']}\n"
-            f"Уже видели: {stats['seen']}\n"
-            f"Новых добавлено в очередь: <b>{stats['queued']}</b>"
-        )
-        if stats["no_data"]:
-            report += f"\nПрофилей без новых постов: {stats['no_data']}"
-        if stats["errors"]:
-            report += "\n\n⚠️ <b>Проблемы:</b>\n" + "\n".join(
-                "• " + html.escape(err) for err in stats["errors"][:8]
-            )
-        await status_msg.edit_text(report)
-    except Exception as e:
-        await status_msg.edit_text(
-            f"❌ <b>Сбор X не выполнен</b>\n{html.escape(str(e)[:900])}",
-        )
-
-
 @dp.message(F.text.in_({"⭐ Собрать топ-10 X", "⭐ Собрать топ-10 новых"}))
 async def collect_top_ten(m: Message, state: FSMContext):
     if not m.from_user or m.from_user.id != ADMIN_ID:
@@ -973,16 +944,6 @@ async def verify_channel(m: Message, state: FSMContext):
             "Проверь, что бот добавлен администратором, а username/ID указан верно.",
             reply_markup=main_menu()
         )
-
-async def scheduler():
-    await asyncio.sleep(10)
-    while True:
-        try:
-            await fetch_tweets()
-        except Exception as e:
-            print("sched err:", e)
-        await asyncio.sleep(CHECK_INTERVAL)
-
 
 async def main():
     init_db()
