@@ -165,6 +165,3 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
     await bot.send_message(chat_id, f"Готово: отправлено {sent} MP3." + (f" Ошибок: {failed}." if failed else ""))
 
 
-@router.message(F.text == "/start")
-async def audio_start_hint(message: Message) -> None:
-    await message.answer("Для MP3 отправляй голосовые подряд. Команды: /audiohelp, /name, /done, /cancel.")
