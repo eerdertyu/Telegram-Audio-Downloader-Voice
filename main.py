@@ -843,7 +843,8 @@ async def fetch_telegram_posts(top_n=10):
                     image_url = html.unescape(pm.group(1)) if pm else None
                     candidates.append((int(post_id), uid, raw[:3500], image_url))
                 candidates.sort(reverse=True)
-                for post_num, uid, raw, image_url in candidates[:top_n]:
+                remaining = max(0, top_n - stats["new"])
+                for post_num, uid, raw, image_url in candidates[:remaining]:
                     translated = await asyncio.to_thread(translate_text, raw)
                     translated = html.escape(translated or raw)
                     link = f"https://t.me/{handle}/{post_num}"
@@ -908,7 +909,10 @@ async def collect_top_ten(m: Message, state: FSMContext):
     errors = []
     for label, collector in (("X", fetch_tweets), ("Telegram", fetch_telegram_posts)):
         try:
-            results.append((label, await collector(top_n=10)))
+            remaining = max(0, 10 - sum(item["new"] for _, item in results))
+            if remaining == 0:
+                break
+            results.append((label, await collector(top_n=remaining)))
         except Exception as exc:
             errors.append(f"{label}: {str(exc)[:220]}")
     total_new = sum(item["new"] for _, item in results)
