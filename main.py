@@ -51,6 +51,7 @@ EMOJI_POOL = [
 
 class Form(StatesGroup):
     waiting_source = State()
+    waiting_telegram_source = State()
     waiting_channel = State()
     waiting_discussion = State()
     waiting_template = State()
@@ -112,9 +113,10 @@ def set_setting(key, value):
 def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="⏳ Очередь постов"), KeyboardButton(text="🔄 Проверить X сейчас")],
-            [KeyboardButton(text="⭐ Собрать топ-10 X"), KeyboardButton(text="🔍 Проверить канал")],
-            [KeyboardButton(text="📡 Источники"), KeyboardButton(text="➕ Добавить источник")],
+            [KeyboardButton(text="⏳ Очередь постов"), KeyboardButton(text="⭐ Собрать топ-10 новых")],
+            [KeyboardButton(text="📡 Источники X"), KeyboardButton(text="➕ Добавить X")],
+            [KeyboardButton(text="📨 Источники Telegram"), KeyboardButton(text="➕ Добавить Telegram")],
+            [KeyboardButton(text="🔍 Проверить канал")],
             [KeyboardButton(text="📢 Мой канал"), KeyboardButton(text="💬 Чат обсуждений")],
             [KeyboardButton(text="📝 Шаблон поста"), KeyboardButton(text="📈 Статистика за день")],
             [KeyboardButton(text="🎧 Голосовые / MP3"), KeyboardButton(text="📊 Статус")],
@@ -169,7 +171,7 @@ async def start(m: Message, state: FSMContext):
         "• Присылаю превью на одобрение ✅\n"
         "• Публикую в канал после подтверждения\n"
         "• Собираю статистику 📈\n\n"
-        "⏱ Проверка публичных профилей через бесплатные RSS-ленты: раз в 30 минут.\n\n"
+        "⏸ Автоматическая проверка отключена. Посты собираются только после нажатия кнопки.\n\n"
         "📰 <b>Новости:</b> очередь на модерацию, ручная проверка X, источники, канал и шаблон.\n"
         "🎧 <b>Аудио:</b> отправляй голосовые — бот соберёт их и пришлёт MP3.\n\n"
         "👇 Выбери нужное действие в меню.",
@@ -250,7 +252,7 @@ async def audio_menu(m: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "📡 Источники")
+@dp.message(F.text.in_({"📡 Источники", "📡 Источники X"}))
 async def sources(m: Message, state: FSMContext):
     await state.clear()
     con = db()
@@ -282,7 +284,7 @@ async def del_source(cb: CallbackQuery):
     await cb.answer()
 
 
-@dp.message(F.text == "➕ Добавить источник")
+@dp.message(F.text.in_({"➕ Добавить источник", "➕ Добавить X"}))
 async def add_src_prompt(m: Message, state: FSMContext):
     await state.set_state(Form.waiting_source)
     await m.answer(
@@ -462,7 +464,7 @@ async def status(m: Message, state: FSMContext):
         f"📢 Канал: <code>{get_setting('channel') or 'не задан'}</code>\n"
         f"💬 Чат: <code>{get_setting('discussion_chat') or 'не задан'}</code>\n"
         f"📝 Шаблон: {'задан' if get_setting('template') else 'не задан'}\n"
-        f"⏱ Интервал: {CHECK_INTERVAL} сек",
+        "⏸ Автосбор: выключен (только вручную)",
         reply_markup=main_menu(),
         link_preview_options=NO_PREVIEW
     )
@@ -778,7 +780,7 @@ async def manual_check(m: Message, state: FSMContext):
         )
 
 
-@dp.message(F.text == "⭐ Собрать топ-10 X")
+@dp.message(F.text.in_({"⭐ Собрать топ-10 X", "⭐ Собрать топ-10 новых"}))
 async def collect_top_ten(m: Message, state: FSMContext):
     if not m.from_user or m.from_user.id != ADMIN_ID:
         return
@@ -865,7 +867,6 @@ async def scheduler():
 
 async def main():
     init_db()
-    asyncio.create_task(scheduler())
     dp.include_router(audio_router)
     await dp.start_polling(bot)
 
