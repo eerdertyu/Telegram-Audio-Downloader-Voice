@@ -946,7 +946,7 @@ async def refil_post(m: Message, state: FSMContext):
                 link_preview_options=NO_PREVIEW
             )
         elif m.caption is not None and (m.photo or m.video or m.document or m.audio or m.animation):
-            body = m.html_caption or html.escape(m.caption)
+            body = html.escape(m.caption)
             combined = f"{body}\n\n{footer}"
             if len(combined) <= 1024:
                 await m.copy_to(chat_id=m.chat.id, caption=combined, parse_mode="HTML")
