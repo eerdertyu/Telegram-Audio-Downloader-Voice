@@ -202,7 +202,7 @@ async def help_cmd(m: Message, state: FSMContext):
         "📊 <b>Статус</b> — общая сводка\n"
         "⭐ <b>Собрать топ-10 новых</b> — вручную собрать посты из X и Telegram\n"
         "🔍 <b>Проверить канал</b> — проверить права бота на публикацию\n\n"
-        "/refil — отправь пост, чтобы бот вернул его с подписью WZH.\\n\\n"
+        "/refil — отправь пост, чтобы бот вернул его с подписью WZH.\n\n"
         "✅ Одобряй посты кнопками под превью.\n\n"
         "⚠️ Для полной статистики реакций нужен webhook — "
         "сейчас показывается базовая статистика.",
@@ -926,9 +926,9 @@ async def refil_start(m: Message, state: FSMContext):
     await state.clear()
     await state.set_state(Refil.waiting_post)
     await m.answer(
-        "🔹 <b>Режим /refil включён</b>\\n\\n"
+        "🔹 <b>Режим /refil включён</b>\n\n"
         "Теперь отправь мне любой пост — текст, фото или видео. "
-        "Я верну его в этот чат с подписью внизу.\\n\\n"
+        "Я верну его в этот чат с подписью внизу.\n\n"
         "Для выхода отправь /start."
     )
 
@@ -942,12 +942,12 @@ async def refil_post(m: Message, state: FSMContext):
             body = m.html_text or html.escape(m.text)
             await bot.send_message(
                 chat_id=m.chat.id,
-                text=f"{body}\\n\\n{footer}",
+                text=f"{body}\n\n{footer}",
                 link_preview_options=NO_PREVIEW
             )
         elif m.caption is not None and (m.photo or m.video or m.document or m.audio or m.animation):
             body = m.html_caption or html.escape(m.caption)
-            combined = f"{body}\\n\\n{footer}"
+            combined = f"{body}\n\n{footer}"
             if len(combined) <= 1024:
                 await m.copy_to(chat_id=m.chat.id, caption=combined, parse_mode="HTML")
             else:
