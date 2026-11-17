@@ -55,6 +55,9 @@ class Form(StatesGroup):
     waiting_discussion = State()
     waiting_template = State()
 
+class Refil(StatesGroup):
+    waiting_post = State()
+
 
 def user_db_path(user_id: int) -> str:
     """Each Telegram user gets an isolated database; preserve the original owner database."""
@@ -915,6 +918,49 @@ async def verify_channel(m: Message, state: FSMContext):
             "Проверь, что бот добавлен администратором, а username/ID указан верно.",
             reply_markup=main_menu()
         )
+
+
+@dp.message(Command("refil"))
+async def refil_start(m: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(Refil.waiting_post)
+    await m.answer(
+        "🔹 <b>Режим /refil включён</b>\\n\\n"
+        "Теперь отправь мне любой пост — текст, фото или видео. "
+        "Я верну его в этот чат с подписью внизу.\\n\\n"
+        "Для выхода отправь /start."
+    )
+
+
+@dp.message(Refil.waiting_post)
+async def refil_post(m: Message, state: FSMContext):
+    footer = '🔹 <a href="https://t.me/wzhgame"><b>WZH | Игровые новости</b></a>'
+
+    try:
+        if m.text:
+            body = m.html_text or html.escape(m.text)
+            await bot.send_message(
+                chat_id=m.chat.id,
+                text=f"{body}\\n\\n{footer}",
+                link_preview_options=NO_PREVIEW
+            )
+        elif m.caption is not None and (m.photo or m.video or m.document or m.audio or m.animation):
+            body = m.html_caption or html.escape(m.caption)
+            combined = f"{body}\\n\\n{footer}"
+            if len(combined) <= 1024:
+                await m.copy_to(chat_id=m.chat.id, caption=combined, parse_mode="HTML")
+            else:
+                await m.copy_to(chat_id=m.chat.id)
+                await bot.send_message(chat_id=m.chat.id, text=footer)
+        elif m.photo or m.video or m.document or m.audio or m.animation:
+            await m.copy_to(chat_id=m.chat.id, caption=footer, parse_mode="HTML")
+        else:
+            await m.copy_to(chat_id=m.chat.id)
+            await bot.send_message(chat_id=m.chat.id, text=footer)
+        await state.clear()
+    except Exception as exc:
+        await m.answer(f"❌ Не удалось обработать пост: {html.escape(str(exc)[:300])}")
+        return
 
 
 @dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS))
