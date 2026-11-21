@@ -26,7 +26,7 @@
 
 ## YouTube
 - `/YouTube` запускает загрузку видео с YouTube. Отправь ссылку, выбери доступное качество и получи видео как документ (файл), не как Telegram-видео.
-- Загрузка использует yt-dlp и ffmpeg. Лимит отправки по умолчанию — 49 МБ (`YOUTUBE_MAX_UPLOAD_BYTES` можно изменить).
+- Загрузка использует yt-dlp и ffmpeg. Лимит отправки по умолчанию — 49 МБ (`YOUTUBE_MAX_UPLOAD_BYTES` можно изменить). Если YouTube требует подтверждение «Sign in to confirm you’re not a bot», добавь `YOUTUBE_COOKIES_BASE64` в Railway Variables: это Base64 от экспортированного файла cookies YouTube в формате Netscape. Альтернатива — `YOUTUBE_COOKIES` с полным текстом такого файла. Cookies храни только в Railway Variables, не публикуй их и не добавляй в GitHub.
 
 ## Голосовые
 - Отправь голосовые подряд — после паузы бот конвертирует их в MP3.
