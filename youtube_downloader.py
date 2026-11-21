@@ -14,15 +14,17 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    BufferedInputFile,
+    FSInputFile,
 )
 from yt_dlp import YoutubeDL
 
 router = Router(name="youtube-downloader")
 log = logging.getLogger("youtube-downloader")
 
-# Telegram Bot API обычно принимает документы размером до 50 МБ.
-MAX_UPLOAD_BYTES = int(os.getenv("YOUTUBE_MAX_UPLOAD_BYTES", str(49 * 1024 * 1024)))
+# Cloud Bot API: 50 MB. Self-hosted local Bot API: up to 2000 MB.
+_LOCAL_BOT_API = bool(os.getenv("TELEGRAM_BOT_API_SERVER", "").strip())
+_DEFAULT_MAX_UPLOAD = 1900 * 1024 * 1024 if _LOCAL_BOT_API else 49 * 1024 * 1024
+MAX_UPLOAD_BYTES = int(os.getenv("YOUTUBE_MAX_UPLOAD_BYTES", str(_DEFAULT_MAX_UPLOAD)))
 QUALITY_ORDER = (2160, 1440, 1080, 720, 480, 360, 240, 144)
 pending_links: dict[tuple[int, int], str] = {}
 pending_downloads: dict[str, dict] = {}
@@ -239,9 +241,8 @@ async def youtube_quality_selected(callback: CallbackQuery) -> None:
                 )
             safe_title = re.sub(r"[^\w\- .]+", "", title, flags=re.UNICODE).strip()
             filename = (safe_title[:90] or "youtube_video") + path.suffix
-            data = await asyncio.to_thread(path.read_bytes)
             await callback.message.answer_document(
-                BufferedInputFile(data, filename=filename),
+                FSInputFile(path, filename=filename),
                 caption=f"✅ <b>{escape_html(title)}</b>\nКачество: {height}p",
             )
         await callback.message.edit_text("✅ Видео отправлено файлом.")
