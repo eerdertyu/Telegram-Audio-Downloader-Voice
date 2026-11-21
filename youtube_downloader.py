@@ -186,7 +186,7 @@ async def youtube_quality_selected(callback: CallbackQuery) -> None:
                     f"Файл получился слишком большим для отправки как документ "
                     f"({size / 1024 / 1024:.1f} МБ). Выбери более низкое качество."
                 )
-            safe_title = re.sub(r"[^\\w\\- .]+", "", title, flags=re.UNICODE).strip()
+            safe_title = re.sub(r"[^\w\- .]+", "", title, flags=re.UNICODE).strip()
             filename = (safe_title[:90] or "youtube_video") + path.suffix
             data = await asyncio.to_thread(path.read_bytes)
             await callback.message.answer_document(
