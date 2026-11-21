@@ -175,6 +175,7 @@ async def youtube_quality_selected(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
         f"⏬ Загружаю <b>{escape_html(item['title'])}</b> в качестве {height}p…"
     )
+    succeeded = False
     try:
         with tempfile.TemporaryDirectory(prefix="yt-download-") as directory:
             path, title = await asyncio.to_thread(
@@ -191,14 +192,22 @@ async def youtube_quality_selected(callback: CallbackQuery) -> None:
             data = await asyncio.to_thread(path.read_bytes)
             await callback.message.answer_document(
                 BufferedInputFile(data, filename=filename),
-                caption=f"✅ <b>{escape_html(title)}</b>\nКачество: {height}p",
+                caption=f"✅ <b>{escape_html(title)}</b>\\nКачество: {height}p",
             )
         await callback.message.edit_text("✅ Видео отправлено файлом.")
+        succeeded = True
     except Exception as exc:
         log.exception("YouTube download/delivery failed")
+        retry_buttons = [
+            [InlineKeyboardButton(text=f"{quality}p", callback_data=f"ytq:{token}:{quality}")]
+            for quality in item["qualities"] if quality != height
+        ]
         await callback.message.edit_text(
-            "❌ Не удалось скачать или отправить видео.\n\n"
-            f"<code>{escape_html(str(exc)[:700])}</code>"
+            "❌ Не удалось скачать или отправить видео.\\n\\n"
+            f"<code>{escape_html(str(exc)[:700])}</code>\\n\\n"
+            "Можешь попробовать другое качество:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=retry_buttons) if retry_buttons else None,
         )
     finally:
-        pending_downloads.pop(token, None)
+        if succeeded:
+            pending_downloads.pop(token, None)
