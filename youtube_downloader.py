@@ -75,7 +75,7 @@ def download_video(url: str, height: int, directory: str) -> tuple[Path, str]:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "format": f"bv*[height<={height}]+ba/b[height<={height}]/b",
+        "format": f"bv*[height<={height}]+ba/b[height<={height}]",
         "merge_output_format": "mp4",
         "outtmpl": output,
         "retries": 3,
@@ -92,7 +92,7 @@ def download_video(url: str, height: int, directory: str) -> tuple[Path, str]:
     return path, info.get("title") or "YouTube video"
 
 
-@router.message(Command("YouTube"))
+@router.message(Command("YouTube", ignore_case=True))
 async def youtube_start(message: Message) -> None:
     if not message.from_user:
         return
@@ -103,7 +103,7 @@ async def youtube_start(message: Message) -> None:
     )
 
 
-@router.message(F.text.regexp(r"^(https?://)?(www\\.)?(youtube\\.com|youtu\\.be)/", flags=re.I))
+@router.message(F.text.regexp(r"(?i)^(https?://)?(www\.)?(youtube\.com|youtu\.be)/"))
 async def youtube_receive_link(message: Message) -> None:
     if not message.from_user:
         return
@@ -187,7 +187,7 @@ async def youtube_quality_selected(callback: CallbackQuery) -> None:
                     f"({size / 1024 / 1024:.1f} МБ). Выбери более низкое качество."
                 )
             safe_title = re.sub(r"[^\\w\\- .]+", "", title, flags=re.UNICODE).strip()
-            filename = (safe_title[:90] or "youtube_video") + ".mp4"
+            filename = (safe_title[:90] or "youtube_video") + path.suffix
             data = await asyncio.to_thread(path.read_bytes)
             await callback.message.answer_document(
                 BufferedInputFile(data, filename=filename),
