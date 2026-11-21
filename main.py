@@ -21,6 +21,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from audio_downloader import router as audio_router
+from youtube_downloader import router as youtube_router
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8743333749"))
@@ -964,7 +965,7 @@ async def refil_post(m: Message, state: FSMContext):
         return
 
 
-@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp)(@\w+)?(?:\s|$)") & ~F.text.in_(MENU_TEXTS))
+@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp|youtube)(@\w+)?(?:\s|$)") & ~F.text.regexp(r"^(https?://)?(www\\.)?(youtube\\.com|youtu\\.be)/", flags=re.I) & ~F.text.in_(MENU_TEXTS))
 async def fallback(m: Message, state: FSMContext):
     if m.text in MENU_TEXTS:
         return
@@ -974,6 +975,7 @@ async def fallback(m: Message, state: FSMContext):
 async def main():
     init_db()
     dp.include_router(audio_router)
+    dp.include_router(youtube_router)
     await dp.start_polling(bot)
 
 
