@@ -1,9 +1,12 @@
 import asyncio
+import base64
+import binascii
 import logging
 import os
 import re
 import tempfile
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -23,6 +26,45 @@ MAX_UPLOAD_BYTES = int(os.getenv("YOUTUBE_MAX_UPLOAD_BYTES", str(49 * 1024 * 102
 QUALITY_ORDER = (2160, 1440, 1080, 720, 480, 360, 240, 144)
 pending_links: dict[tuple[int, int], str] = {}
 pending_downloads: dict[str, dict] = {}
+
+
+@contextmanager
+def youtube_cookie_options():
+    """Подключает cookies YouTube из Railway Variables, если они заданы."""
+    raw = os.getenv("YOUTUBE_COOKIES", "").strip()
+    encoded = os.getenv("YOUTUBE_COOKIES_BASE64", "").strip()
+    cookie_data = None
+    if encoded:
+        try:
+            cookie_data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("YOUTUBE_COOKIES_BASE64 содержит некорректный Base64.") from exc
+    elif raw:
+        cookie_data = raw.replace("\\r\\n", "\\n").encode("utf-8")
+
+    if not cookie_data:
+        yield {}
+        return
+
+    if b" Netscape HTTP Cookie File" not in cookie_data[:200] and not cookie_data.startswith(b"# Netscape"):
+        raise RuntimeError(
+            "YOUTUBE_COOKIES должен содержать cookies в формате Netscape, "
+            "или задай YOUTUBE_COOKIES_BASE64."
+        )
+
+    cookie_path = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="yt-cookies-", suffix=".txt", delete=False) as handle:
+            cookie_path = handle.name
+            handle.write(cookie_data)
+        os.chmod(cookie_path, 0o600)
+        yield {"cookiefile": cookie_path}
+    finally:
+        if cookie_path:
+            try:
+                os.unlink(cookie_path)
+            except OSError:
+                log.warning("Could not remove temporary YouTube cookies file")
 
 
 def valid_youtube_url(value: str) -> bool:
@@ -48,8 +90,10 @@ def inspect_video(url: str) -> dict:
         "extractor_retries": 2,
         "socket_timeout": 20,
     }
-    with YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
+    with youtube_cookie_options() as cookie_options:
+        options.update(cookie_options)
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
     formats = info.get("formats") or []
     heights = {
         int(item["height"])
@@ -83,8 +127,10 @@ def download_video(url: str, height: int, directory: str) -> tuple[Path, str]:
         "socket_timeout": 30,
         "overwrites": True,
     }
-    with YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
+    with youtube_cookie_options() as cookie_options:
+        options.update(cookie_options)
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True)
     candidates = [p for p in Path(directory).glob("video.*") if p.is_file()]
     if not candidates:
         raise RuntimeError("Загрузчик не создал файл.")
