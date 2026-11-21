@@ -965,7 +965,7 @@ async def refil_post(m: Message, state: FSMContext):
         return
 
 
-@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp|youtube)(@\w+)?(?:\s|$)") & ~F.text.regexp(r"^(https?://)?(www\\.)?(youtube\\.com|youtu\\.be)/", flags=re.I) & ~F.text.in_(MENU_TEXTS))
+@dp.message(F.text & ~F.text.regexp(r"^/(name|done|cancel|audiohelp|youtube)(@\w+)?(?:\s|$)") & ~F.text.regexp(r"(?i)^(https?://)?(www\.)?(youtube\.com|youtu\.be)/") & ~F.text.in_(MENU_TEXTS))
 async def fallback(m: Message, state: FSMContext):
     if m.text in MENU_TEXTS:
         return
