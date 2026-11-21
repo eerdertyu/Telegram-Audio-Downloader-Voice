@@ -89,6 +89,8 @@ def inspect_video(url: str) -> dict:
         "noplaylist": True,
         "extractor_retries": 2,
         "socket_timeout": 20,
+        # Explicitly enable Deno for YouTube JavaScript challenge solving (EJS).
+        "js_runtimes": {"deno": {}},
     }
     with youtube_cookie_options() as cookie_options:
         options.update(cookie_options)
@@ -119,13 +121,15 @@ def download_video(url: str, height: int, directory: str) -> tuple[Path, str]:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "format": f"bv*[height<={height}]+ba/b[height<={height}]",
+        # Prefer requested height, then fall back to the best available stream.
+        "format": f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b",
         "merge_output_format": "mp4",
         "outtmpl": output,
         "retries": 3,
         "fragment_retries": 3,
         "socket_timeout": 30,
         "overwrites": True,
+        "js_runtimes": {"deno": {}},
     }
     with youtube_cookie_options() as cookie_options:
         options.update(cookie_options)
