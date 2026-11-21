@@ -18,6 +18,8 @@ from aiogram.types import (
 )
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from audio_downloader import router as audio_router
@@ -37,7 +39,16 @@ elif os.path.isdir("/data"):
 else:
     DB = "bot.db"
 
-bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+# Optional self-hosted Telegram Bot API server enables uploads up to 2000 MB.
+# Keep unset to use the standard cloud Bot API (50 MB upload limit).
+_local_api = os.getenv("TELEGRAM_BOT_API_SERVER", "").strip()
+if _local_api:
+    _session = AiohttpSession(
+        api=TelegramAPIServer.from_base(_local_api, is_local=True)
+    )
+    bot = Bot(BOT_TOKEN, session=_session, default=DefaultBotProperties(parse_mode="HTML"))
+else:
+    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
