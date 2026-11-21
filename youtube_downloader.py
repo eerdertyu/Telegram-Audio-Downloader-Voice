@@ -192,7 +192,7 @@ async def youtube_quality_selected(callback: CallbackQuery) -> None:
             data = await asyncio.to_thread(path.read_bytes)
             await callback.message.answer_document(
                 BufferedInputFile(data, filename=filename),
-                caption=f"✅ <b>{escape_html(title)}</b>\\nКачество: {height}p",
+                caption=f"✅ <b>{escape_html(title)}</b>\nКачество: {height}p",
             )
         await callback.message.edit_text("✅ Видео отправлено файлом.")
         succeeded = True
@@ -203,8 +203,8 @@ async def youtube_quality_selected(callback: CallbackQuery) -> None:
             for quality in item["qualities"] if quality != height
         ]
         await callback.message.edit_text(
-            "❌ Не удалось скачать или отправить видео.\\n\\n"
-            f"<code>{escape_html(str(exc)[:700])}</code>\\n\\n"
+            "❌ Не удалось скачать или отправить видео.\n\n"
+            f"<code>{escape_html(str(exc)[:700])}</code>\n\n"
             "Можешь попробовать другое качество:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=retry_buttons) if retry_buttons else None,
         )
