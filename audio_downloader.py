@@ -21,7 +21,9 @@ MAX_VOICE_BYTES = 20 * 1024 * 1024
 @dataclass
 class ChatBatch:
     name: str = ""
-    items: list[bytes] = field(default_factory=list)
+    # Keep download tasks keyed by Telegram message_id. Downloads may finish
+    # out of order, but message_id preserves the order in which voices arrived.
+    items: dict[int, asyncio.Task] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     timer: asyncio.Task | None = None
 
@@ -37,6 +39,12 @@ def safe_filename(value: str) -> str:
     value = re.sub(r"[^\w\- ]+", "", value, flags=re.UNICODE).strip()
     value = re.sub(r"\s+", " ", value)
     return value[:60].strip(" ._-") or "audio"
+
+
+async def download_voice(bot, file_id: str) -> bytes:
+    buffer = io.BytesIO()
+    await bot.download(file_id, destination=buffer)
+    return buffer.getvalue()
 
 
 @router.message(Command("name"))
@@ -64,7 +72,11 @@ async def cancel(message: Message) -> None:
             batch.timer.cancel()
         batch.timer = None
         count = len(batch.items)
+        tasks = list(batch.items.values())
         batch.items.clear()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
     await message.answer(f"Партия отменена. Удалено голосовых: {count}." if count else "Очередь пуста.")
 
 
@@ -86,18 +98,14 @@ async def receive_voice(message: Message) -> None:
     if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
         await message.answer("Голосовое слишком большое: лимит 20 МБ.")
         return
+
     batch = get_batch(message.chat.id)
-    try:
-        buffer = io.BytesIO()
-        await message.bot.download(voice.file_id, destination=buffer)
-        data = buffer.getvalue()
-    except Exception:
-        log.exception("Could not download voice")
-        await message.answer("Не удалось скачать голосовое. Попробуй ещё раз.")
-        return
+    # Register the download immediately. The task is stored by message_id,
+    # not by completion time, so network latency cannot reorder the batch.
+    download_task = asyncio.create_task(download_voice(message.bot, voice.file_id))
     should_flush = False
     async with batch.lock:
-        batch.items.append(data)
+        batch.items[message.message_id] = download_task
         count = len(batch.items)
         if batch.timer and not batch.timer.done():
             batch.timer.cancel()
@@ -106,6 +114,7 @@ async def receive_voice(message: Message) -> None:
             should_flush = True
         else:
             batch.timer = asyncio.create_task(delayed_flush(message.chat.id, message.bot))
+
     await message.answer(f"Принято: {count} голосовых в партии.")
     if should_flush:
         await flush_batch(message.chat.id, message.bot)
@@ -143,7 +152,8 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
             if reply_to:
                 await reply_to.answer("Пока нет голосовых для обработки.")
             return
-        items = batch.items[:]
+        # Snapshot in Telegram arrival order, regardless of download completion.
+        items = sorted(batch.items.items(), key=lambda item: item[0])
         batch.items.clear()
         if batch.timer and batch.timer is not asyncio.current_task() and not batch.timer.done():
             batch.timer.cancel()
@@ -152,16 +162,18 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
 
     sent = failed = 0
     await bot.send_message(chat_id, f"Конвертирую {len(items)} голосовых в MP3…")
-    for index, source in enumerate(items, start=1):
+    for index, (_, download_task) in enumerate(items, start=1):
         filename = f"{name} {index}.mp3" if name else f"{index}.mp3"
         try:
+            # Wait for each download in order before converting/sending it.
+            source = await download_task
             data = await convert_to_mp3(source)
             await bot.send_document(chat_id, BufferedInputFile(data, filename=filename), caption=filename)
             sent += 1
             await asyncio.sleep(0.15)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             failed += 1
             log.exception("Audio conversion/delivery failed for chat %s item %s", chat_id, index)
     await bot.send_message(chat_id, f"Готово: отправлено {sent} MP3." + (f" Ошибок: {failed}." if failed else ""))
-
-
