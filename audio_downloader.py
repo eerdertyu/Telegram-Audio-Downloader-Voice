@@ -14,7 +14,6 @@ from aiogram.types import Message, BufferedInputFile
 router = Router(name="audio-downloader")
 log = logging.getLogger("audio-downloader")
 IDLE_SECONDS = int(os.getenv("BATCH_IDLE_SECONDS", "8"))
-MAX_BATCH_SIZE = 10
 MAX_VOICE_BYTES = 20 * 1024 * 1024
 
 
@@ -23,7 +22,7 @@ class ChatBatch:
     name: str = ""
     # Keep download tasks keyed by Telegram message_id. Downloads may finish
     # out of order, but message_id preserves the order in which voices arrived.
-    items: dict[int, asyncio.Task] = field(default_factory=dict)
+    items: dict[int, tuple[asyncio.Task, int]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     timer: asyncio.Task | None = None
 
@@ -72,7 +71,7 @@ async def cancel(message: Message) -> None:
             batch.timer.cancel()
         batch.timer = None
         count = len(batch.items)
-        tasks = list(batch.items.values())
+        tasks = [task for task, _duration in batch.items.values()]
         batch.items.clear()
     for task in tasks:
         if not task.done():
@@ -88,7 +87,7 @@ async def audio_help(message: Message) -> None:
         "/name — сбросить имя\n"
         "/done — обработать партию сейчас\n"
         "/cancel — отменить партию\n"
-        f"Отправляй голосовые подряд: через {IDLE_SECONDS} сек. паузы начнётся обработка. Максимум {MAX_BATCH_SIZE} за партию."
+        f"Отправляй голосовые подряд: через {IDLE_SECONDS} сек. паузы начнётся обработка. Количество голосовых в партии не ограничено."
     )
 
 
@@ -103,21 +102,15 @@ async def receive_voice(message: Message) -> None:
     # Register the download immediately. The task is stored by message_id,
     # not by completion time, so network latency cannot reorder the batch.
     download_task = asyncio.create_task(download_voice(message.bot, voice.file_id))
-    should_flush = False
     async with batch.lock:
-        batch.items[message.message_id] = download_task
+        batch.items[message.message_id] = (download_task, voice.duration or 0)
         count = len(batch.items)
         if batch.timer and not batch.timer.done():
             batch.timer.cancel()
         batch.timer = None
-        if count >= MAX_BATCH_SIZE:
-            should_flush = True
-        else:
-            batch.timer = asyncio.create_task(delayed_flush(message.chat.id, message.bot))
+        batch.timer = asyncio.create_task(delayed_flush(message.chat.id, message.bot))
 
     await message.answer(f"Принято: {count} голосовых в партии.")
-    if should_flush:
-        await flush_batch(message.chat.id, message.bot)
 
 
 async def delayed_flush(chat_id: int, bot) -> None:
@@ -154,6 +147,7 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
             return
         # Snapshot in Telegram arrival order, regardless of download completion.
         items = sorted(batch.items.items(), key=lambda item: item[0])
+        total_duration = sum(duration for _message_id, (_task, duration) in items)
         batch.items.clear()
         if batch.timer and batch.timer is not asyncio.current_task() and not batch.timer.done():
             batch.timer.cancel()
@@ -162,7 +156,7 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
 
     sent = failed = 0
     await bot.send_message(chat_id, f"Конвертирую {len(items)} голосовых в MP3…")
-    for index, (_, download_task) in enumerate(items, start=1):
+    for index, (_, (download_task, _duration)) in enumerate(items, start=1):
         filename = f"{name} {index}.mp3" if name else f"{index}.mp3"
         try:
             # Wait for each download in order before converting/sending it.
@@ -176,4 +170,8 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
         except Exception:
             failed += 1
             log.exception("Audio conversion/delivery failed for chat %s item %s", chat_id, index)
+    hours, remainder = divmod(total_duration, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration_text = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
     await bot.send_message(chat_id, f"Готово: отправлено {sent} MP3." + (f" Ошибок: {failed}." if failed else ""))
+    await bot.send_message(chat_id, f"Общая длительность голосовых: {duration_text}.")
