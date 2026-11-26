@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import tempfile
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -155,6 +156,7 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
         name = batch.name
 
     sent = failed = 0
+    archive_files: list[tuple[str, bytes]] = []
     await bot.send_message(chat_id, f"Конвертирую {len(items)} голосовых в MP3…")
     for index, (_, (download_task, _duration)) in enumerate(items, start=1):
         filename = f"{name} {index}.mp3" if name else f"{index}.mp3"
@@ -164,6 +166,7 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
             data = await convert_to_mp3(source)
             await bot.send_document(chat_id, BufferedInputFile(data, filename=filename), caption=filename)
             sent += 1
+            archive_files.append((filename, data))
             await asyncio.sleep(0.15)
         except asyncio.CancelledError:
             raise
@@ -175,3 +178,15 @@ async def flush_batch(chat_id: int, bot, reply_to: Message | None = None) -> Non
     duration_text = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
     await bot.send_message(chat_id, f"Готово: отправлено {sent} MP3." + (f" Ошибок: {failed}." if failed else ""))
     await bot.send_message(chat_id, f"Общая длительность голосовых: {duration_text}.")
+    if archive_files:
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for filename, data in archive_files:
+                archive.writestr(filename, data)
+        archive_buffer.seek(0)
+        archive_name = f"{name or 'аудиосообщение'}.zip"
+        await bot.send_document(
+            chat_id,
+            BufferedInputFile(archive_buffer.getvalue(), filename=archive_name),
+            caption=f"Архив партии: {len(archive_files)} MP3.",
+        )
